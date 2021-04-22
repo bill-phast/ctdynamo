@@ -9,7 +9,7 @@
         <groupId>ai.phast</groupId>
         <version>1.0</version>
     </parent>
-    <artifactId>ctdynamo-annotations</artifactId>
+    <artifactId>ctdynamo-runtime</artifactId>
 
     <properties>
         <maven.compiler.source>11</maven.compiler.source>

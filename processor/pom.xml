@@ -34,7 +34,7 @@
         </dependency>
         <dependency>
             <groupId>ai.phast</groupId>
-            <artifactId>ctdynamo-annotations</artifactId>
+            <artifactId>ctdynamo-runtime</artifactId>
             <version>1.0</version>
             <scope>compile</scope>
         </dependency>
