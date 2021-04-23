@@ -9,7 +9,7 @@
         <groupId>ai.phast</groupId>
         <version>1.0</version>
     </parent>
-    <artifactId>ctdynamo-runtime</artifactId>
+    <artifactId>ctdynamo-examples</artifactId>
 
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
@@ -33,6 +33,18 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>dynamodb</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ai.phast</groupId>
+            <artifactId>ctdynamo-runtime</artifactId>
+            <version>1.0</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>ai.phast</groupId>
+            <artifactId>ctdynamo-processor</artifactId>
+            <version>1.0</version>
+            <scope>compile</scope>
         </dependency>
     </dependencies>
 
