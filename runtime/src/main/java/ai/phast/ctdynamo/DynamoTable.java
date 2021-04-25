@@ -14,10 +14,6 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
 
     public abstract SortT getSortKey(T value);
 
-    protected abstract Map<String, AttributeValue> encode(T value);
-
-    protected abstract T decode(Map<String, AttributeValue> map);
-
     public T get(PartitionT partitionValue, SortT sortValue) {
         throw new UnsupportedOperationException();
     }
