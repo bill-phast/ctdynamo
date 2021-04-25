@@ -5,9 +5,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-@Target(ElementType.TYPE) @Retention(RetentionPolicy.SOURCE)
-public @interface DynamoDoc {
-
-    boolean ignoreNulls() default true;
-
+@Target({ElementType.TYPE, ElementType.FIELD, ElementType.METHOD}) @Retention(RetentionPolicy.SOURCE)
+public @interface DynamoPartitionKey {
+    String value() default "";
 }

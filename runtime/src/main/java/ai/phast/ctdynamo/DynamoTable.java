@@ -1,22 +1,36 @@
 package ai.phast.ctdynamo;
 
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+
+import java.util.Map;
+
 public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
 
     public final T get(T value) {
         return get(getPartitionKey(value), getSortKey(value));
     }
 
-    public abstract T get(PartitionT partitionValue, SortT sortValue);
+    public abstract PartitionT getPartitionKey(T value);
 
-    public abstract void put(T value);
+    public abstract SortT getSortKey(T value);
+
+    protected abstract Map<String, AttributeValue> encode(T value);
+
+    protected abstract T decode(Map<String, AttributeValue> map);
+
+    public T get(PartitionT partitionValue, SortT sortValue) {
+        throw new UnsupportedOperationException();
+    }
+
+    public void put(T value) {
+        throw new UnsupportedOperationException();
+    }
 
     public final void delete(T value) {
         delete(getPartitionKey(value), getSortKey(value));
     }
 
-    public abstract void delete(PartitionT partitionKey, SortT sortKey);
-
-    public abstract PartitionT getPartitionKey(T value);
-
-    public abstract SortT getSortKey(T value);
+    public void delete(PartitionT partitionKey, SortT sortKey) {
+        throw new UnsupportedOperationException();
+    }
 }
