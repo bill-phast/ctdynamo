@@ -7,19 +7,15 @@ import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
+public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, PartitionT, SortT> {
 
-    private final DynamoDbClient client;
-
-    private final DynamoDbAsyncClient asyncClient;
-
-    public DynamoTable(DynamoDbClient client, DynamoDbAsyncClient asyncClient, String tableName) {
-        super(tableName);
-        this.client = client;
-        this.asyncClient = asyncClient;
+    public DynamoTable(DynamoDbClient client, DynamoDbAsyncClient asyncClient, String tableName,
+                       String partitionKeyAttribute, String sortKeyAttribute) {
+        super(client, asyncClient, tableName, null, partitionKeyAttribute, sortKeyAttribute);
     }
 
     public final T get(T value) {
@@ -31,9 +27,9 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
                           .tableName(getTableName())
                           .key(keysToMap(partitionValue, sortValue))
                           .build();
-        var response = (client == null
-                        ? asyncClient.getItem(request).join()
-                        : client.getItem(request));
+        var response = (getClient() == null
+                        ? getAsyncClient().getItem(request).join()
+                        : getClient().getItem(request));
         return (response == null ? null : decode(response.item()));
     }
 
@@ -46,9 +42,9 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
                           .tableName(getTableName())
                           .key(keysToMap(partitionValue, sortValue))
                           .build();
-        var response = (asyncClient == null
-                        ? CompletableFuture.supplyAsync(() -> client.getItem(request))
-                        : asyncClient.getItem(request));
+        var response = (getAsyncClient() == null
+                        ? CompletableFuture.supplyAsync(() -> getClient().getItem(request))
+                        : getAsyncClient().getItem(request));
         return response.thenApply(r -> r.item() == null ? null : decode(r.item()));
     }
 
@@ -57,10 +53,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
             .tableName(getTableName())
             .item(encodeToMap(value))
             .build();
-        if (client == null) {
-            asyncClient.putItem(request).join();
+        if (getClient() == null) {
+            getAsyncClient().putItem(request).join();
         } else {
-            client.putItem(request);
+            getClient().putItem(request);
         }
     }
 
@@ -69,9 +65,9 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
                           .tableName(getTableName())
                           .item(encodeToMap(value))
                           .build();
-        return (asyncClient == null
-                ? CompletableFuture.runAsync(() -> client.putItem(request))
-                : asyncClient.putItem(request).thenApply(r -> null));
+        return (getAsyncClient() == null
+                ? CompletableFuture.runAsync(() -> getClient().putItem(request))
+                : getAsyncClient().putItem(request).thenApply(r -> null));
     }
 
     public final void delete(T value) {
@@ -83,10 +79,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
                           .tableName(getTableName())
                           .key(keysToMap(partitionKey, sortKey))
                           .build();
-        if (client == null) {
-            asyncClient.deleteItem(request).join();
+        if (getClient() == null) {
+            getAsyncClient().deleteItem(request).join();
         } else {
-            client.deleteItem(request);
+            getClient().deleteItem(request);
         }
     }
 
@@ -99,9 +95,9 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
                           .tableName(getTableName())
                           .key(keysToMap(partitionKey, sortKey))
                           .build();
-        return (asyncClient == null
-                ? CompletableFuture.runAsync(() -> client.deleteItem(request))
-                : asyncClient.deleteItem(request).thenApply(r -> null));
+        return (getAsyncClient() == null
+                ? CompletableFuture.runAsync(() -> getClient().deleteItem(request))
+                : getAsyncClient().deleteItem(request).thenApply(r -> null));
     }
 
     public abstract PartitionT getPartitionKey(T value);
@@ -114,5 +110,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
      * @param sortValue The value of the sort key. Must be null if there is no sort key
      * @return A dynamo-friendly map of attribute values
      */
-    protected abstract Map<String, AttributeValue> keysToMap(PartitionT partitionValue, SortT sortValue);
+    protected final Map<String, AttributeValue> keysToMap(PartitionT partitionValue, SortT sortValue) {
+        return sortValue == null
+               ? Collections.singletonMap(getPartitionKeyAttribute(), partitionValueToAttributeValue(partitionValue))
+               : Map.of(getPartitionKeyAttribute(), partitionValueToAttributeValue(partitionValue),
+                   getSortKeyAttribute(), sortValueToAttributeValue(sortValue));
+    }
 }

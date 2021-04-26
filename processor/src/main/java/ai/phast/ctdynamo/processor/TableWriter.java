@@ -88,7 +88,8 @@ public class TableWriter {
                             .addMethod(buildConstructor(false, true))
                             .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
                             .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
-                            .addMethod(buildKeysToMap())
+                            .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", partitionKeyAttribute))
+                            .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", sortKeyAttribute))
                             .addMethod(buildEncoder())
                             .addMethod(buildDecoder())
                             .addMethod(buildGetExclusiveStart())
@@ -156,13 +157,15 @@ public class TableWriter {
         if (withAsyncClient) {
             builder.addParameter(DynamoDbAsyncClient.class, "asyncClient");
         }
-        builder.addParameter(String.class, "tableName");
+        builder.addParameter(String.class, "tableName")
+            .addParameter(String.class, "partitionKeyAttribute")
+            .addParameter(String.class, "sortKeyAttribute");
         if (withSyncClient && withAsyncClient) {
-            builder.addStatement("super(client, asyncClient, tableName)");
+            builder.addStatement("super(client, asyncClient, tableName, partitionKeyAttribute, sortKeyAttribute)");
         } else if (withSyncClient) {
-            builder.addStatement("super(client, null, tableName)");
+            builder.addStatement("super(client, null, tableName, partitionKeyAttribute, sortKeyAttribute)");
         } else {
-            builder.addStatement("super(null, asyncClient, tableName)");
+            builder.addStatement("super(null, asyncClient, tableName, partitionKeyAttribute, sortKeyAttribute)");
         }
         return builder.build();
     }
@@ -184,22 +187,19 @@ public class TableWriter {
         return methodBuilder.build();
     }
 
-    private MethodSpec buildKeysToMap() {
-        var partitionKeyMetadata = attributes.get(partitionKeyAttribute);
-        var sortKeyMetadata = (sortKeyAttribute == null ? null : attributes.get(sortKeyAttribute));
-        var methodBuilder = MethodSpec.methodBuilder("keysToMap")
+    private MethodSpec buildKeyToAttributeValue(String methodName, String attribute) {
+        var metadata = (attribute == null ? null : attributes.get(attribute));
+        var methodBuilder = MethodSpec.methodBuilder(methodName)
                                 .addAnnotation(Override.class)
                                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
-                                .addParameter(TypeName.get(partitionKeyMetadata.returnType), "partitionValue")
-                                .returns(TypeName.get(dynamoMapMirror));
-        if (sortKeyMetadata == null) {
-            methodBuilder.addParameter(Void.class, "sortValue");
-            methodBuilder.addStatement("return $T.singletonMap($S, $T.builder().s(partitionValue).build())",
-                Collections.class, partitionKeyAttribute, AttributeValue.class);
+                                .returns(AttributeValue.class);
+        if (metadata == null) {
+            methodBuilder.addParameter(Void.class, "value");
+            methodBuilder.addStatement("throw new $T($S)", UnsupportedOperationException.class,
+                "This table has no sort key");
         } else {
-            methodBuilder.addParameter(TypeName.get(sortKeyMetadata.returnType), "sortValue");
-            methodBuilder.addStatement("return $T.of($S, $T.builder().s(partitionValue).build(), $S, $T.builder().s(sortValue).build())",
-                Map.class, partitionKeyAttribute, Collections.class, AttributeValue.class, sortKeyAttribute, Collections.class, AttributeValue.class);
+            methodBuilder.addParameter(TypeName.get(metadata.returnType), "value");
+            methodBuilder.addStatement("return $T.builder().s(value).build()", AttributeValue.class);
         }
         return methodBuilder.build();
     }
