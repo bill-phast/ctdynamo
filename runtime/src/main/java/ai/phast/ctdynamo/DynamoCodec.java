@@ -1,8 +1,10 @@
 package ai.phast.ctdynamo;
 
-public abstract class DynamoCodec<PojoT, DynamoT> {
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
-    public abstract DynamoT encode(PojoT javaValue);
+public abstract class DynamoCodec<T> {
 
-    public abstract PojoT decode(DynamoT dynamoValue);
+    public abstract AttributeValue encode(T value);
+
+    public abstract T decode(AttributeValue dynamoValue);
 }

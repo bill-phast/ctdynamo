@@ -56,8 +56,7 @@ public class DynamoProcessor extends AbstractProcessor {
             }
             try {
                 var writer = new TableWriter((TypeElement)element, processingEnv.getElementUtils(), processingEnv.getTypeUtils());
-                writer.buildJavaFile(false).writeTo(processingEnv.getFiler());
-                writer.buildJavaFile(true).writeTo(processingEnv.getFiler());
+                writer.buildJavaFile().writeTo(processingEnv.getFiler());
             } catch (TableException e) {
                 messager.printMessage(Diagnostic.Kind.ERROR, e.getMessage(), e.getElement() == null ? element : e.getElement());
             } catch (IOException e) {

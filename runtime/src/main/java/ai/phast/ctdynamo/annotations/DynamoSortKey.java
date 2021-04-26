@@ -11,5 +11,5 @@ import java.lang.annotation.Target;
 public @interface DynamoSortKey {
     String value() default "";
 
-    Class<? extends DynamoCodec<?, ?>> codec() default DefaultCodec.class;
+    Class<? extends DynamoCodec<?>> codec() default DefaultCodec.class;
 }

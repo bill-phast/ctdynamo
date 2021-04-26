@@ -1,7 +1,6 @@
 package ai.phast.ctdynamo.processor;
 
-import ai.phast.ctdynamo.DynamoAsyncTable;
-import ai.phast.ctdynamo.DynamoSyncTable;
+import ai.phast.ctdynamo.DynamoTable;
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
 import ai.phast.ctdynamo.annotations.DynamoIgnore;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
@@ -75,16 +74,18 @@ public class TableWriter {
         }
     }
 
-    public JavaFile buildJavaFile(boolean async) throws TableException {
-        var tableType = types.getDeclaredType(elements.getTypeElement((async ? DynamoAsyncTable.class : DynamoSyncTable.class).getCanonicalName()),
+    public JavaFile buildJavaFile() throws TableException {
+        var tableType = types.getDeclaredType(elements.getTypeElement(DynamoTable.class.getCanonicalName()),
             types.getDeclaredType(entryType), attributes.get(partitionKeyAttribute).returnType,
             sortKeyAttribute == null
             ? types.getDeclaredType(elements.getTypeElement(Void.class.getCanonicalName()))
             : attributes.get(sortKeyAttribute).returnType);
-        var classSpec = TypeSpec.classBuilder(entryType.getSimpleName() + (async ? "DynamoAsyncTable" : "DynamoTable"))
+        var classSpec = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoTable")
                             .addModifiers(Modifier.PUBLIC)
                             .superclass(ParameterizedTypeName.get(tableType))
-                            .addMethod(buildConstructor(async))
+                            .addMethod(buildConstructor(true, true))
+                            .addMethod(buildConstructor(true, false))
+                            .addMethod(buildConstructor(false, true))
                             .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
                             .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
                             .addMethod(buildKeysToMap())
@@ -146,13 +147,24 @@ public class TableWriter {
                 : annotationValue);
     }
 
-    private MethodSpec buildConstructor(boolean async) {
-        return MethodSpec.constructorBuilder()
-                   .addModifiers(Modifier.PUBLIC)
-                   .addParameter(async ? DynamoDbAsyncClient.class : DynamoDbClient.class, "client")
-                   .addParameter(String.class, "tableName")
-                   .addStatement("super(client, tableName)")
-                   .build();
+    private MethodSpec buildConstructor(boolean withSyncClient, boolean withAsyncClient) {
+        var builder = MethodSpec.constructorBuilder()
+                          .addModifiers(Modifier.PUBLIC);
+        if (withSyncClient) {
+            builder.addParameter(DynamoDbClient.class, "client");
+        }
+        if (withAsyncClient) {
+            builder.addParameter(DynamoDbAsyncClient.class, "asyncClient");
+        }
+        builder.addParameter(String.class, "tableName");
+        if (withSyncClient && withAsyncClient) {
+            builder.addStatement("super(client, asyncClient, tableName)");
+        } else if (withSyncClient) {
+            builder.addStatement("super(client, null, tableName)");
+        } else {
+            builder.addStatement("super(null, asyncClient, tableName)");
+        }
+        return builder.build();
     }
 
     private MethodSpec buildGetKey(String getKeyName, String attributeName) {
@@ -193,7 +205,7 @@ public class TableWriter {
     }
 
     private MethodSpec buildEncoder() throws TableException {
-        var builder = MethodSpec.methodBuilder("encode")
+        var builder = MethodSpec.methodBuilder("encodeToMap")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
             .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")

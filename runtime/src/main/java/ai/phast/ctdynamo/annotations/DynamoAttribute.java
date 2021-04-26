@@ -14,5 +14,5 @@ public @interface DynamoAttribute {
 
     String value() default "";
 
-    Class<? extends DynamoCodec<?, ?>> codec() default DefaultCodec.class;
+    Class<? extends DynamoCodec<?>> codec() default DefaultCodec.class;
 }

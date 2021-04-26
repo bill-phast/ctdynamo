@@ -1,6 +1,7 @@
 package ai.phast.ctdynamo.annotations;
 
 import ai.phast.ctdynamo.DynamoCodec;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
  * A nonfuctional placeholder codec. This is the default for all attributes that let you specify a codec. If it is
@@ -8,15 +9,15 @@ import ai.phast.ctdynamo.DynamoCodec;
  *
  * <p>Package protected because it should not be visible to applications.
  */
-class DefaultCodec extends DynamoCodec<Void, Void> {
+class DefaultCodec extends DynamoCodec<Void> {
 
     @Override
-    public Void encode(Void javaValue) {
+    public AttributeValue encode(Void value) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public Void decode(Void dynamoValue) {
+    public Void decode(AttributeValue dynamoValue) {
         throw new UnsupportedOperationException();
     }
 }
