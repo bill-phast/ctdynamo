@@ -8,6 +8,8 @@ public class LogBatch {
 
     private String id;
 
+    private int batchNum;
+
     @DynamoPartitionKey
     public String getId() {
         return id;
@@ -15,5 +17,13 @@ public class LogBatch {
 
     public void setId(String id) {
         this.id = id;
+    }
+
+    public int getBatchNum() {
+        return batchNum;
+    }
+
+    public void setBatchNum(int batchNum) {
+        this.batchNum = batchNum;
     }
 }

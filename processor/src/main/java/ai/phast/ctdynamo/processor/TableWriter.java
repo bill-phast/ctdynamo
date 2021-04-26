@@ -11,8 +11,10 @@ import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import javax.lang.model.element.ElementKind;
@@ -87,8 +89,10 @@ public class TableWriter {
         var classSpec = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoTable")
                             .addModifiers(Modifier.PUBLIC)
                             .superclass(ParameterizedTypeName.get(tableType))
+                            .addMethod(buildConstructor())
                             .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
                             .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
+                            .addMethod(buildKeysToMap())
                             .addMethod(buildEncoder())
                             .addMethod(buildDecoder())
                             .addMethod(buildGetExclusiveStart())
@@ -145,6 +149,15 @@ public class TableWriter {
                 : annotationValue);
     }
 
+    private MethodSpec buildConstructor() {
+        return MethodSpec.constructorBuilder()
+                   .addModifiers(Modifier.PUBLIC)
+                   .addParameter(DynamoDbClient.class, "client")
+                   .addParameter(String.class, "tableName")
+                   .addStatement("super(client, tableName)")
+                   .build();
+    }
+
     private MethodSpec buildGetKey(String getKeyName, String attributeName) {
         var methodBuilder = MethodSpec.methodBuilder(getKeyName)
                                 .addAnnotation(Override.class)
@@ -162,30 +175,87 @@ public class TableWriter {
         return methodBuilder.build();
     }
 
-    private MethodSpec buildEncoder() {
+    private MethodSpec buildKeysToMap() {
+        var partitionKeyMetadata = attributes.get(partitionKeyAttribute);
+        var sortKeyMetadata = (sortKeyAttribute == null ? null : attributes.get(sortKeyAttribute));
+        var methodBuilder = MethodSpec.methodBuilder("keysToMap")
+                                .addAnnotation(Override.class)
+                                .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+                                .addParameter(TypeName.get(partitionKeyMetadata.returnType), "partitionValue")
+                                .returns(TypeName.get(dynamoMapMirror));
+        if (sortKeyMetadata == null) {
+            methodBuilder.addParameter(Void.class, "sortValue");
+            methodBuilder.addStatement("return $T.singletonMap($S, $T.builder().s(partitionValue).build())",
+                Collections.class, partitionKeyAttribute, AttributeValue.class);
+        } else {
+            methodBuilder.addParameter(TypeName.get(sortKeyMetadata.returnType), "sortValue");
+            methodBuilder.addStatement("return $T.of($S, $T.builder().s(partitionValue).build(), $S, $T.builder().s(sortValue).build())",
+                Map.class, partitionKeyAttribute, Collections.class, AttributeValue.class, sortKeyAttribute, Collections.class, AttributeValue.class);
+        }
+        return methodBuilder.build();
+    }
+
+    private MethodSpec buildEncoder() throws TableException {
         var builder = MethodSpec.methodBuilder("encode")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
             .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
             .returns(TypeName.get(dynamoMapMirror))
-            .addStatement("$T map = new $T($L * 2)", MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, attributes.size());
-        int varNum = 0;
-        var x = new HashMap<String, String>(10);
+            .addStatement("$T map = new $T($L)", MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, (attributes.size() * 4 + 2) / 3);
+        new HashMap<String, String>(5);
         for (var entry: attributes.entrySet()) {
-            builder.addStatement("map.put($S, $T.builder().s(value." + entry.getValue().getterName + "()).build())", entry.getKey(), AttributeValue.class);
+            var kind = entry.getValue().returnType.getKind();
+            switch(kind) {
+                case INT:
+                case LONG:
+                case BYTE:
+                case FLOAT:
+                case DOUBLE:
+                case SHORT:
+                    // Any numeric type will be catenated with a string and passed in as a number
+                    builder.addStatement("map.put($S, $T.builder().n($S + value." + entry.getValue().getterName + "()).build())",
+                        entry.getKey(), AttributeValue.class, "");
+                    break;
+                case DECLARED:
+                    // Classes. May be null
+                    var varName = "v" + upcaseFirst(entry.getKey());  // Prepend a "v" and upcase to make sure it is not a reserved word, or the name "map" or "value"
+                    builder.addStatement("$T " + varName + " = value." + entry.getValue().getterName + "()", TypeName.get(entry.getValue().returnType));
+                    builder.beginControlFlow("if (" + varName + " != null)");
+                    builder.addStatement("map.put($S, $T.builder().s(" + varName + ").build())", entry.getKey(), AttributeValue.class);
+                    builder.endControlFlow();
+                    break;
+                default:
+                    throw new TableException("Unknown type kind " + kind);
+            }
         }
-        builder.addStatement("return map");
-        return builder.build();
+        return builder.addStatement("return map").build();
     }
 
-    private MethodSpec buildDecoder() {
-        return MethodSpec.methodBuilder("decode")
+    private MethodSpec buildDecoder() throws TableException {
+        var entryTypeName = TypeName.get(types.getDeclaredType(entryType));
+        var builder = MethodSpec.methodBuilder("decode")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
             .addParameter(TypeName.get(dynamoMapMirror), "map")
-            .returns(TypeName.get(types.getDeclaredType(entryType)))
-            .addStatement("return null")
-            .build();
+            .returns(entryTypeName)
+            .addStatement("$T result = new $T()", entryTypeName, entryTypeName);
+        builder.addStatement("$T attribute", AttributeValue.class);
+        for (var entry: attributes.entrySet()) {
+            builder.addStatement("attribute = map.get($S)", entry.getKey());
+            builder.beginControlFlow("if (attribute != null)");
+            switch (entry.getValue().returnType.getKind()) {
+                case INT:
+                    builder.addStatement("result." + entry.getValue().setterName + "($T.parseInt(attribute.n()))", Integer.class);
+                    break;
+                case DECLARED:
+                    builder.addStatement("result." + entry.getValue().setterName + "(attribute.s())");
+                    break;
+                default:
+                    throw new TableException("Unknown type kind " + entry.getValue().returnType.getKind());
+            }
+            builder.endControlFlow();
+        }
+        return builder.addStatement("return result").build();
     }
 
     private MethodSpec buildGetExclusiveStart() {
@@ -202,12 +272,18 @@ public class TableWriter {
         return "get" + Character.toUpperCase(attributeName.charAt(0)) + attributeName.substring(1);
     }
 
+    private String upcaseFirst(String value) {
+        return Character.toUpperCase(value.charAt(0)) + value.substring(1);
+    }
+
     private static class AttributeMetadata {
         public final String getterName;
+        private final String setterName;
         public final TypeMirror returnType;
 
         public AttributeMetadata(String getterName, TypeMirror returnType) {
             this.getterName = getterName;
+            setterName = "set" + getterName.substring(3);
             this.returnType = returnType;
         }
     }

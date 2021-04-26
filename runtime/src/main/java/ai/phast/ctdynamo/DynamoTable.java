@@ -1,6 +1,9 @@
 package ai.phast.ctdynamo;
 
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
 import java.util.Map;
 
@@ -14,12 +17,30 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T> {
 
     public abstract SortT getSortKey(T value);
 
+    protected abstract Map<String, AttributeValue> keysToMap(PartitionT partitionValue, SortT sortValue);
+
+    private final DynamoDbClient client;
+
+    private final String tableName;
+
+    public DynamoTable(DynamoDbClient client, String tableName) {
+        this.client = client;
+        this.tableName = tableName;
+    }
+
     public T get(PartitionT partitionValue, SortT sortValue) {
-        throw new UnsupportedOperationException();
+        var result = client.getItem(GetItemRequest.builder()
+                                        .tableName(tableName)
+                                        .key(keysToMap(partitionValue, sortValue))
+                                        .build());
+        return decode(result.item());
     }
 
     public void put(T value) {
-        throw new UnsupportedOperationException();
+        client.putItem(PutItemRequest.builder()
+                           .tableName(tableName)
+                           .item(encode(value))
+                           .build());
     }
 
     public final void delete(T value) {
