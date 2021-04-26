@@ -74,6 +74,8 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
             .scanIndexForward(query.scanForward);
         if (query.pageSize < Integer.MAX_VALUE) {
             dynamoQueryBuilder.limit(query.pageSize);
+        } else if (query.limit < Integer.MAX_VALUE) {
+            dynamoQueryBuilder.limit(query.limit);
         }
         attributeValues.put(":p", partitionValueToAttributeValue(query.partitionValue));
         if (query.sortLo != null) {
