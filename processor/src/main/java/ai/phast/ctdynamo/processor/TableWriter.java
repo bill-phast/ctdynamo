@@ -1,6 +1,7 @@
 package ai.phast.ctdynamo.processor;
 
-import ai.phast.ctdynamo.DynamoTable;
+import ai.phast.ctdynamo.DynamoAsyncTable;
+import ai.phast.ctdynamo.DynamoSyncTable;
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
 import ai.phast.ctdynamo.annotations.DynamoIgnore;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
@@ -11,6 +12,7 @@ import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
@@ -52,16 +54,13 @@ public class TableWriter {
 
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
 
-    public TableWriter(TypeElement entryType, Elements elements, Types types) {
+    public TableWriter(TypeElement entryType, Elements elements, Types types) throws TableException {
         this.entryType = entryType;
         this.elements = elements;
         this.types = types;
         dynamoMapMirror = types.getDeclaredType(elements.getTypeElement(Map.class.getCanonicalName()),
             types.getDeclaredType(elements.getTypeElement(String.class.getCanonicalName())),
             types.getDeclaredType(elements.getTypeElement(AttributeValue.class.getCanonicalName())));
-    }
-
-    public JavaFile buildJavaFile() throws TableException {
         for (var element : entryType.getEnclosedElements()) {
             if (element.getKind() == ElementKind.METHOD) {
                 var exec = (ExecutableElement)element;
@@ -74,22 +73,18 @@ public class TableWriter {
         if (partitionKeyAttribute == null) {
             throw new TableException("Tables must have a getter with @DynamoPartitionKey annotation");
         }
-        var className = entryType.getQualifiedName() + "DynamoTable";
-        var mainFunc = MethodSpec.methodBuilder("main")
-                           .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                           .returns(void.class)
-                           .addParameter(String[].class, "args")
-                           .addStatement("$T.out.println($S)", System.class, "Hello world!")
-                           .build();
-        var tableType = types.getDeclaredType(elements.getTypeElement(DynamoTable.class.getCanonicalName()),
+    }
+
+    public JavaFile buildJavaFile(boolean async) throws TableException {
+        var tableType = types.getDeclaredType(elements.getTypeElement((async ? DynamoAsyncTable.class : DynamoSyncTable.class).getCanonicalName()),
             types.getDeclaredType(entryType), attributes.get(partitionKeyAttribute).returnType,
             sortKeyAttribute == null
             ? types.getDeclaredType(elements.getTypeElement(Void.class.getCanonicalName()))
             : attributes.get(sortKeyAttribute).returnType);
-        var classSpec = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoTable")
+        var classSpec = TypeSpec.classBuilder(entryType.getSimpleName() + (async ? "DynamoAsyncTable" : "DynamoTable"))
                             .addModifiers(Modifier.PUBLIC)
                             .superclass(ParameterizedTypeName.get(tableType))
-                            .addMethod(buildConstructor())
+                            .addMethod(buildConstructor(async))
                             .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
                             .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
                             .addMethod(buildKeysToMap())
@@ -97,7 +92,9 @@ public class TableWriter {
                             .addMethod(buildDecoder())
                             .addMethod(buildGetExclusiveStart())
                             .build();
-        return JavaFile.builder(className, classSpec).build();
+        var qualifiedName = entryType.getQualifiedName().toString();
+        var packageSplit = qualifiedName.lastIndexOf('.');
+        return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classSpec).build();
     }
 
     private void processGetter(ExecutableElement getter) throws TableException {
@@ -149,10 +146,10 @@ public class TableWriter {
                 : annotationValue);
     }
 
-    private MethodSpec buildConstructor() {
+    private MethodSpec buildConstructor(boolean async) {
         return MethodSpec.constructorBuilder()
                    .addModifiers(Modifier.PUBLIC)
-                   .addParameter(DynamoDbClient.class, "client")
+                   .addParameter(async ? DynamoDbAsyncClient.class : DynamoDbClient.class, "client")
                    .addParameter(String.class, "tableName")
                    .addStatement("super(client, tableName)")
                    .build();
