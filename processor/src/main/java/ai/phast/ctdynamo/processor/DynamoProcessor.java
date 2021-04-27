@@ -1,16 +1,9 @@
 package ai.phast.ctdynamo.processor;
 
-import ai.phast.ctdynamo.DynamoTable;
-import ai.phast.ctdynamo.annotations.DynamoDoc;
-import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
-import ai.phast.ctdynamo.annotations.DynamoSortKey;
+import ai.phast.ctdynamo.annotations.DynamoItem;
 import com.google.auto.service.AutoService;
-import com.squareup.javapoet.JavaFile;
-import com.squareup.javapoet.MethodSpec;
-import com.squareup.javapoet.TypeSpec;
 
 import java.io.IOException;
-import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.Set;
 import javax.annotation.processing.AbstractProcessor;
@@ -20,10 +13,7 @@ import javax.annotation.processing.Processor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.ElementKind;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
-import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 
 @AutoService(Processor.class)
@@ -39,7 +29,7 @@ public class DynamoProcessor extends AbstractProcessor {
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
-        return Set.of(DynamoDoc.class.getCanonicalName());
+        return Set.of(DynamoItem.class.getCanonicalName());
     }
 
     @Override
@@ -49,16 +39,21 @@ public class DynamoProcessor extends AbstractProcessor {
 
     @Override
     public boolean process(Set<? extends TypeElement> set, RoundEnvironment roundEnvironment) {
-        for (var element : roundEnvironment.getElementsAnnotatedWith(DynamoDoc.class)) {
+        for (var element : roundEnvironment.getElementsAnnotatedWith(DynamoItem.class)) {
             if (element.getKind() != ElementKind.CLASS) {
-                messager.printMessage(Diagnostic.Kind.ERROR, "Only classes can have annotation " + DynamoDoc.class.getSimpleName(), element);
+                messager.printMessage(Diagnostic.Kind.ERROR, "Only classes can have annotation " + DynamoItem.class.getSimpleName(), element);
                 return true;
             }
-            var annotation = element.getAnnotation(DynamoDoc.class);
+            var annotation = element.getAnnotation(DynamoItem.class);
             try {
                 var writer = new TableWriter((TypeElement)element, processingEnv.getElementUtils(), processingEnv.getTypeUtils(),
                     annotation.ignoreNulls());
-                writer.buildJavaFile().writeTo(processingEnv.getFiler());
+                if (annotation.generateTable()) {
+                    writer.buildTableClass().writeTo(processingEnv.getFiler());
+                }
+                if (annotation.generateCodec()) {
+                    writer.buildCodecClass().writeTo(processingEnv.getFiler());
+                }
             } catch (TableException e) {
                 messager.printMessage(Diagnostic.Kind.ERROR, e.getMessage(), e.getElement() == null ? element : e.getElement());
             } catch (IOException e) {

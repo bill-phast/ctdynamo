@@ -1,13 +1,13 @@
 package ai.phast.ctdynamo.examples;
 
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
-import ai.phast.ctdynamo.annotations.DynamoDoc;
+import ai.phast.ctdynamo.annotations.DynamoItem;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 
 import java.time.Instant;
 import java.util.List;
 
-@DynamoDoc()
+@DynamoItem(generateCodec = true)
 public class LogBatch {
 
     private String id;

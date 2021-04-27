@@ -1,5 +1,6 @@
 package ai.phast.ctdynamo.processor;
 
+import ai.phast.ctdynamo.DynamoCodec;
 import ai.phast.ctdynamo.DynamoTable;
 import ai.phast.ctdynamo.annotations.DefaultCodec;
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
@@ -100,12 +101,12 @@ public class TableWriter {
                 }
             }
         }
+    }
+
+    public JavaFile buildTableClass() throws TableException {
         if (partitionKeyAttribute == null) {
             throw new TableException("Tables must have a getter with @DynamoPartitionKey annotation");
         }
-    }
-
-    public JavaFile buildJavaFile() throws TableException {
         var tableType = types.getDeclaredType(elements.getTypeElement(DynamoTable.class.getCanonicalName()),
             types.getDeclaredType(entryType), attributes.get(partitionKeyAttribute).returnType,
             sortKeyAttribute == null
@@ -120,16 +121,35 @@ public class TableWriter {
                 .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
             classBuilder.addField(field.build());
         }
-        classBuilder.addMethod(buildConstructor(true, true))
-                            .addMethod(buildConstructor(true, false))
-                            .addMethod(buildConstructor(false, true))
+        classBuilder.addMethod(buildTableConstructor(true, true))
+                            .addMethod(buildTableConstructor(true, false))
+                            .addMethod(buildTableConstructor(false, true))
                             .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
                             .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
                             .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", partitionKeyAttribute))
                             .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", sortKeyAttribute))
-                            .addMethod(buildEncoder())
-                            .addMethod(buildDecoder())
+                            .addMethod(buildEncoder(false))
+                            .addMethod(buildDecoder(false))
                             .addMethod(buildGetExclusiveStart());
+        var qualifiedName = entryType.getQualifiedName().toString();
+        var packageSplit = qualifiedName.lastIndexOf('.');
+        return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classBuilder.build()).build();
+    }
+
+    public JavaFile buildCodecClass() throws TableException {
+        var codecType = types.getDeclaredType(elements.getTypeElement(DynamoCodec.class.getCanonicalName()),
+            types.getDeclaredType(entryType));
+        var classBuilder = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoCodec")
+                               .addModifiers(Modifier.PUBLIC)
+                               .superclass(ParameterizedTypeName.get(codecType));
+        for (var codecEntry: codecClassToCodecVar.entrySet()) {
+            var field = FieldSpec.builder(TypeName.get(codecEntry.getKey()), codecEntry.getValue(),
+                Modifier.PRIVATE, Modifier.FINAL)
+                            .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
+            classBuilder.addField(field.build());
+        }
+        classBuilder.addMethod(buildEncoder(true))
+            .addMethod(buildDecoder(true));
         var qualifiedName = entryType.getQualifiedName().toString();
         var packageSplit = qualifiedName.lastIndexOf('.');
         return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classBuilder.build()).build();
@@ -194,7 +214,7 @@ public class TableWriter {
                 : annotationValue);
     }
 
-    private MethodSpec buildConstructor(boolean withSyncClient, boolean withAsyncClient) {
+    private MethodSpec buildTableConstructor(boolean withSyncClient, boolean withAsyncClient) {
         var builder = MethodSpec.constructorBuilder()
                           .addModifiers(Modifier.PUBLIC);
         if (withSyncClient) {
@@ -251,12 +271,12 @@ public class TableWriter {
         return methodBuilder.build();
     }
 
-    private MethodSpec buildEncoder() throws TableException {
-        var builder = MethodSpec.methodBuilder("encodeToMap")
+    private MethodSpec buildEncoder(boolean toAttributeValue) throws TableException {
+        var builder = MethodSpec.methodBuilder(toAttributeValue ? "encode" : "encodeToMap")
                           .addAnnotation(Override.class)
                           .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                           .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
-                          .returns(TypeName.get(dynamoMapMirror))
+                          .returns(toAttributeValue ? TypeName.get(AttributeValue.class) : TypeName.get(dynamoMapMirror))
                           .addStatement("$T map = new $T($L)", MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, (attributes.size() * 4 + 2) / 3);
         var formatParams = new HashMap<String, Object>();
         for (var entry : attributes.entrySet()) {
@@ -280,17 +300,27 @@ public class TableWriter {
                 }
             }
         }
-        return builder.addStatement("return map").build();
+        if (toAttributeValue) {
+            builder.addStatement("return $T.builder().m(map).build()", AttributeValue.class);
+        } else {
+            builder.addStatement("return map");
+        }
+        return builder.build();
     }
 
-    private MethodSpec buildDecoder() throws TableException {
+    private MethodSpec buildDecoder(boolean fromAttributeValue) throws TableException {
         var entryTypeName = TypeName.get(types.getDeclaredType(entryType));
         var builder = MethodSpec.methodBuilder("decode")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
-            .addParameter(TypeName.get(dynamoMapMirror), "map")
             .returns(entryTypeName)
             .addStatement("$T result = new $T()", entryTypeName, entryTypeName);
+        if (fromAttributeValue) {
+            builder.addParameter(TypeName.get(AttributeValue.class), "value")
+                .addStatement("$T map = value.m()", dynamoMapMirror);
+        } else {
+            builder.addParameter(TypeName.get(dynamoMapMirror), "map");
+        }
         builder.addStatement("$T attribute", AttributeValue.class);
         var formatParams = new HashMap<String, Object>();
         for (var entry: attributes.entrySet()) {
