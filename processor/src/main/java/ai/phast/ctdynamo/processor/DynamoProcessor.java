@@ -54,8 +54,10 @@ public class DynamoProcessor extends AbstractProcessor {
                 messager.printMessage(Diagnostic.Kind.ERROR, "Only classes can have annotation " + DynamoDoc.class.getSimpleName(), element);
                 return true;
             }
+            var annotation = element.getAnnotation(DynamoDoc.class);
             try {
-                var writer = new TableWriter((TypeElement)element, processingEnv.getElementUtils(), processingEnv.getTypeUtils());
+                var writer = new TableWriter((TypeElement)element, processingEnv.getElementUtils(), processingEnv.getTypeUtils(),
+                    annotation.ignoreNulls());
                 writer.buildJavaFile().writeTo(processingEnv.getFiler());
             } catch (TableException e) {
                 messager.printMessage(Diagnostic.Kind.ERROR, e.getMessage(), e.getElement() == null ? element : e.getElement());

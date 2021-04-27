@@ -6,7 +6,7 @@ import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 
 import java.time.Instant;
 
-@DynamoDoc
+@DynamoDoc()
 public class LogBatch {
 
     private String id;

@@ -66,10 +66,13 @@ public class TableWriter {
 
     private final Map<TypeMirror, String> codecClassToCodecVar = new HashMap<>();
 
-    public TableWriter(TypeElement entryType, Elements elements, Types types) throws TableException {
+    private final boolean ignoreNulls;
+
+    public TableWriter(TypeElement entryType, Elements elements, Types types, boolean ignoreNulls) throws TableException {
         this.entryType = entryType;
         this.elements = elements;
         this.types = types;
+        this.ignoreNulls = ignoreNulls;
         dynamoMapMirror = types.getDeclaredType(elements.getTypeElement(Map.class.getCanonicalName()),
             types.getDeclaredType(elements.getTypeElement(String.class.getCanonicalName())),
             types.getDeclaredType(elements.getTypeElement(AttributeValue.class.getCanonicalName())));
@@ -253,9 +256,14 @@ public class TableWriter {
                 // Non-primitives. May be null
                 var varName = "v" + upcaseFirst(entry.getKey());  // Prepend a "v" and upcase to make sure it is not a reserved word, or the name "map" or "value"
                 builder.addStatement("$T " + varName + " = value." + entry.getValue().getterName + "()", TypeName.get(entry.getValue().returnType));
-                builder.beginControlFlow("if (" + varName + " != null)");
-                builder.addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(entry.getKey(), varName, formatParams) + ");\n", formatParams);
-                builder.endControlFlow();
+                if (ignoreNulls) {
+                    builder.beginControlFlow("if (" + varName + " != null)")
+                        .addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(entry.getKey(), varName, formatParams) + ");\n", formatParams)
+                        .endControlFlow();
+                } else {
+                    builder.addNamedCode("map.put($" + attrNameParam + ":S, " + varName + " == null ? NULL_ATTRIBUTE_VALUE : "
+                                             + buildAttributeEncodeExpression(entry.getKey(), varName, formatParams) + ");\n", formatParams);
+                }
             }
         }
         return builder.addStatement("return map").build();
@@ -272,7 +280,7 @@ public class TableWriter {
         builder.addStatement("$T attribute", AttributeValue.class);
         for (var entry: attributes.entrySet()) {
             builder.addStatement("attribute = map.get($S)", entry.getKey());
-            builder.beginControlFlow("if (attribute != null)");
+            builder.beginControlFlow("if (attribute != null && attribute.nul() != $T.TRUE)", Boolean.class);
             switch (entry.getValue().returnType.getKind()) {
                 case INT:
                     builder.addStatement("result." + entry.getValue().setterName + "($T.parseInt(attribute.n()))", Integer.class);

@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
 
@@ -26,11 +27,14 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
 
     public DynamoIndex(DynamoDbClient client, DynamoDbAsyncClient asyncClient,
                        String tableName, String indexName, String partitionKeyAttribute, String sortKeyAttribute) {
+        if (client == null && asyncClient == null) {
+            throw new NullPointerException("At least one of client or asyncClient must be non-null");
+        }
         this.client = client;
         this.asyncClient = asyncClient;
-        this.tableName = tableName;
+        this.tableName = Objects.requireNonNull(tableName, "tableName must not be null");
         this.indexName = indexName;
-        this.partitionKeyAttribute = partitionKeyAttribute;
+        this.partitionKeyAttribute = Objects.requireNonNull(partitionKeyAttribute, "partitionKeyAttribute must not be null");
         this.sortKeyAttribute = sortKeyAttribute;
     }
 
