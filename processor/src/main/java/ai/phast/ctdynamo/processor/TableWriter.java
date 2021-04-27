@@ -5,6 +5,7 @@ import ai.phast.ctdynamo.DynamoTable;
 import ai.phast.ctdynamo.annotations.DefaultCodec;
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
 import ai.phast.ctdynamo.annotations.DynamoIgnore;
+import ai.phast.ctdynamo.annotations.DynamoItem;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 import ai.phast.ctdynamo.annotations.DynamoSortKey;
 import com.squareup.javapoet.ClassName;
@@ -19,6 +20,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -33,6 +35,7 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
+import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
@@ -74,7 +77,7 @@ public class TableWriter {
 
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
 
-    private final Map<TypeMirror, String> codecClassToCodecVar = new HashMap<>();
+    private final Map<TypeName, String> codecClassToCodecVar = new HashMap<>();
 
     private final boolean ignoreNulls;
 
@@ -116,7 +119,8 @@ public class TableWriter {
                             .addModifiers(Modifier.PUBLIC)
                             .superclass(ParameterizedTypeName.get(tableType));
         for (var codecEntry: codecClassToCodecVar.entrySet()) {
-            var field = FieldSpec.builder(TypeName.get(codecEntry.getKey()), codecEntry.getValue(),
+            System.out.println("ADDING FIELD FOR " + codecEntry.getKey());
+            var field = FieldSpec.builder(codecEntry.getKey(), codecEntry.getValue(),
                 Modifier.PRIVATE, Modifier.FINAL)
                 .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
             classBuilder.addField(field.build());
@@ -143,7 +147,7 @@ public class TableWriter {
                                .addModifiers(Modifier.PUBLIC)
                                .superclass(ParameterizedTypeName.get(codecType));
         for (var codecEntry: codecClassToCodecVar.entrySet()) {
-            var field = FieldSpec.builder(TypeName.get(codecEntry.getKey()), codecEntry.getValue(),
+            var field = FieldSpec.builder(codecEntry.getKey(), codecEntry.getValue(),
                 Modifier.PRIVATE, Modifier.FINAL)
                             .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
             classBuilder.addField(field.build());
@@ -159,14 +163,14 @@ public class TableWriter {
         if (getter.getAnnotation(DynamoIgnore.class) != null) {
             return; // Ignoring this field.
         }
-        TypeMirror codecClass = null;
+        TypeMirror codecType = null;
         var getterName = getter.getSimpleName().toString();
         var getterReturnType = getter.getReturnType();
         var attributeName = getAttributeName(null, getterName);
         var attributeAnnotation = getter.getAnnotation(DynamoAttribute.class);
         if (attributeAnnotation != null) {
             attributeName = getAttributeName(attributeAnnotation.value(), getterName);
-            codecClass = getCodecClass(attributeAnnotation::codec);
+            codecType = getCodecClass(attributeAnnotation::codec);
         }
         var partitionKeyAnnotation = getter.getAnnotation(DynamoPartitionKey.class);
         if (partitionKeyAnnotation != null) {
@@ -180,7 +184,7 @@ public class TableWriter {
                 throw new TableException("Cannot have multiple partition keys", getter);
             }
             partitionKeyAttribute = getAttributeName(partitionKeyAnnotation.value(), getterName);
-            codecClass = getCodecClass(partitionKeyAnnotation::codec);
+            codecType = getCodecClass(partitionKeyAnnotation::codec);
         }
         var sortKeyAnnotation = getter.getAnnotation(DynamoSortKey.class);
         if (sortKeyAnnotation != null) {
@@ -194,15 +198,27 @@ public class TableWriter {
                 throw new TableException("Cannot have multiple sort keys", getter);
             }
             sortKeyAttribute = getAttributeName(sortKeyAnnotation.value(), getterName);
-            codecClass = getCodecClass(sortKeyAnnotation::codec);
+            codecType = getCodecClass(sortKeyAnnotation::codec);
         }
-        if (defaultCodecMirror.equals(codecClass)) {
-            codecClass = null;
+        var codecName = (codecType == null || defaultCodecMirror.equals(codecType) ? null : TypeName.get(codecType));
+        System.out.println("RETURN TYPE = " + getterReturnType + ", codecName=" + codecName);
+        if (codecName == null && getterReturnType.getKind() == TypeKind.DECLARED) {
+            // Check to see if this is based on a class that has a DynamoItem annotation
+            var itemAnnotation = ((DeclaredType)getterReturnType).asElement().getAnnotation(DynamoItem.class);
+            if (itemAnnotation != null && Arrays.asList(itemAnnotation.value()).contains(DynamoItem.Output.CODEC)) {
+                // This gets a little tricky. We can't just create a TypeMirror, because the codec class will be generated by
+                // us, so it doesn't exist yet. I think be working with the "stage" system of annotation processing we can
+                // delay until it is created, but it's easier to do these steps to create a ClassName object for a nonexistant
+                // class.
+                var getterClassName = (ClassName)TypeName.get(getterReturnType);
+                codecName = ClassName.get(getterClassName.packageName(), getterClassName.simpleName() + "DynamoCodec");
+                System.out.println("  Was dynamo doc, now codecName=" + codecName);
+            }
         }
-        if (codecClass != null) {
-            codecClassToCodecVar.computeIfAbsent(codecClass, klass -> "codec" + ++paramNumber);
+        if (codecName != null) {
+            codecClassToCodecVar.computeIfAbsent(codecName, klass -> "codec" + ++paramNumber);
         }
-        var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, getterReturnType, codecClass));
+        var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, getterReturnType, codecName));
         if (prevMetadata != null) {
             throw new TableException("Two getters return attribute " + attributeName, getter);
         }
@@ -376,22 +392,31 @@ public class TableWriter {
         return buildAttributeEncodeExpression(valueVar, metadata.codecClass, metadata.returnType, formatData);
     }
 
-    private String buildAttributeEncodeExpression(String valueVar, TypeMirror codecClass, TypeMirror returnType, Map<String, Object> formatData)
+    private String buildAttributeEncodeExpression(String valueVar, TypeName codecClass, TypeMirror returnType, Map<String, Object> formatData)
     throws TableException {
         if (codecClass == null) {
             var avId = "t" + ++paramNumber;
+            var typeId = "t" + ++paramNumber;
             formatData.put(avId, AttributeValue.class);
             switch (returnType.getKind()) {
                 case INT:
+                    formatData.put(typeId, Integer.class);
+                    return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
                 case LONG:
+                    formatData.put(typeId, Long.class);
+                    return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
                 case BYTE:
+                    formatData.put(typeId, Byte.class);
+                    return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
                 case FLOAT:
+                    formatData.put(typeId, Float.class);
+                    return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
                 case DOUBLE:
+                    formatData.put(typeId, Double.class);
+                    return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
                 case SHORT:
-                    var emptyStrId = "s" + ++paramNumber;
-                    // Any numeric type will be catenated with a string and passed in as a number
-                    formatData.put(emptyStrId, "");
-                    return "$" + avId + ":T.builder().n($" + emptyStrId + ":S + " + valueVar + ").build()";
+                    formatData.put(typeId, Short.class);
+                    return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
                 case DECLARED:
                     break;
                 default:
@@ -416,7 +441,7 @@ public class TableWriter {
         }
     }
 
-    private String buildAttributeDecodeExpression(String valueVar, TypeMirror codecClass, TypeMirror returnType, Map<String, Object> formatData)
+    private String buildAttributeDecodeExpression(String valueVar, TypeName codecClass, TypeMirror returnType, Map<String, Object> formatData)
         throws TableException {
         if (codecClass == null) {
             var typeId = "t" + ++paramNumber;
@@ -477,9 +502,13 @@ public class TableWriter {
         public final String getterName;
         private final String setterName;
         public final TypeMirror returnType;
-        public final TypeMirror codecClass;
+        public final TypeName codecClass;
 
         public AttributeMetadata(String getterName, TypeMirror returnType, TypeMirror codecClass) {
+            this(getterName, returnType, codecClass == null ? null : TypeName.get(codecClass));
+        }
+
+        public AttributeMetadata(String getterName, TypeMirror returnType, TypeName codecClass) {
             this.getterName = getterName;
             setterName = "set" + getterName.substring(3);
             this.returnType = returnType;

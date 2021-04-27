@@ -48,10 +48,10 @@ public class DynamoProcessor extends AbstractProcessor {
             try {
                 var writer = new TableWriter((TypeElement)element, processingEnv.getElementUtils(), processingEnv.getTypeUtils(),
                     annotation.ignoreNulls());
-                if (annotation.generateTable()) {
+                if (Arrays.asList(annotation.value()).contains(DynamoItem.Output.TABLE)) {
                     writer.buildTableClass().writeTo(processingEnv.getFiler());
                 }
-                if (annotation.generateCodec()) {
+                if (Arrays.asList(annotation.value()).contains(DynamoItem.Output.CODEC)) {
                     writer.buildCodecClass().writeTo(processingEnv.getFiler());
                 }
             } catch (TableException e) {

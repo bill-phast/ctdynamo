@@ -8,10 +8,12 @@ import java.lang.annotation.Target;
 @Target(ElementType.TYPE) @Retention(RetentionPolicy.SOURCE)
 public @interface DynamoItem {
 
+    enum Output {
+        TABLE, CODEC
+    }
+
+    Output[] value() default {Output.TABLE};
+
     boolean ignoreNulls() default true;
-
-    boolean generateTable() default true;
-
-    boolean generateCodec() default false;
 
 }

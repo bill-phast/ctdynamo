@@ -7,7 +7,7 @@ import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 import java.time.Instant;
 import java.util.List;
 
-@DynamoItem(generateCodec = true)
+@DynamoItem({DynamoItem.Output.TABLE, DynamoItem.Output.CODEC})
 public class LogBatch {
 
     private String id;
@@ -17,6 +17,8 @@ public class LogBatch {
     private Instant date;
 
     private List<String> messages;
+
+    private Position position;
 
     @DynamoPartitionKey
     public String getId() {
@@ -50,5 +52,13 @@ public class LogBatch {
 
     public void setMessages(List<String> value) {
         messages = value;
+    }
+
+    public Position getPosition() {
+        return position;
+    }
+
+    public void setPosition(Position value) {
+        position = value;
     }
 }
