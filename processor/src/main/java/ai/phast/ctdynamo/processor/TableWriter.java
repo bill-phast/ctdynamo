@@ -20,9 +20,12 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
@@ -60,6 +63,12 @@ public class TableWriter {
 
     private final TypeMirror defaultCodecMirror;
 
+    private final TypeMirror stringMirror;
+
+    private final TypeMirror listMirror;
+
+    private final TypeMirror setMirror;
+
     private int paramNumber = 0;
 
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
@@ -77,6 +86,11 @@ public class TableWriter {
             types.getDeclaredType(elements.getTypeElement(String.class.getCanonicalName())),
             types.getDeclaredType(elements.getTypeElement(AttributeValue.class.getCanonicalName())));
         defaultCodecMirror = types.getDeclaredType(elements.getTypeElement(DefaultCodec.class.getCanonicalName()));
+        stringMirror = types.getDeclaredType(elements.getTypeElement(String.class.getCanonicalName()));
+        listMirror = types.getDeclaredType(elements.getTypeElement(List.class.getCanonicalName()),
+            types.getWildcardType(null, null));
+        setMirror = types.getDeclaredType(elements.getTypeElement(Set.class.getCanonicalName()),
+            types.getWildcardType(null, null));
         for (var element : entryType.getEnclosedElements()) {
             if (element.getKind() == ElementKind.METHOD) {
                 var exec = (ExecutableElement)element;
@@ -278,24 +292,14 @@ public class TableWriter {
             .returns(entryTypeName)
             .addStatement("$T result = new $T()", entryTypeName, entryTypeName);
         builder.addStatement("$T attribute", AttributeValue.class);
+        var formatParams = new HashMap<String, Object>();
         for (var entry: attributes.entrySet()) {
             builder.addStatement("attribute = map.get($S)", entry.getKey());
             builder.beginControlFlow("if (attribute != null && attribute.nul() != $T.TRUE)", Boolean.class);
-            switch (entry.getValue().returnType.getKind()) {
-                case INT:
-                    builder.addStatement("result." + entry.getValue().setterName + "($T.parseInt(attribute.n()))", Integer.class);
-                    break;
-                case DECLARED:
-                    var codec = entry.getValue().codecClass;
-                    if (codec == null) {
-                        builder.addStatement("result." + entry.getValue().setterName + "(attribute.s())");
-                    } else {
-                        builder.addStatement("result." + entry.getValue().setterName + "(" + codecClassToCodecVar.get(codec) + ".decode(attribute))");
-                    }
-                    break;
-                default:
-                    throw new TableException("Unknown type kind " + entry.getValue().returnType.getKind());
-            }
+            formatParams.clear();
+            builder.addNamedCode("result." + entry.getValue().setterName + "("
+                + buildAttributeDecodeExpression("attribute", entry.getValue().codecClass, entry.getValue().returnType, formatParams)
+                + ");\n", formatParams);
             builder.endControlFlow();
         }
         return builder.addStatement("return result").build();
@@ -339,10 +343,15 @@ public class TableWriter {
         if (valueVar == null) {
             valueVar = "value." + metadata.getterName + "()";
         }
-        if (metadata.codecClass == null) {
+        return buildAttributeEncodeExpression(valueVar, metadata.codecClass, metadata.returnType, formatData);
+    }
+
+    private String buildAttributeEncodeExpression(String valueVar, TypeMirror codecClass, TypeMirror returnType, Map<String, Object> formatData)
+    throws TableException {
+        if (codecClass == null) {
             var avId = "t" + ++paramNumber;
             formatData.put(avId, AttributeValue.class);
-            switch (metadata.returnType.getKind()) {
+            switch (returnType.getKind()) {
                 case INT:
                 case LONG:
                 case BYTE:
@@ -356,18 +365,72 @@ public class TableWriter {
                 case DECLARED:
                     break;
                 default:
-                    throw new TableException("Unknown typeKind " + metadata.returnType.getKind());
+                    throw new TableException("Unknown typeKind " + returnType.getKind());
             }
-            var declType = (TypeElement)((DeclaredType)metadata.returnType).asElement();
-            var qualifiedName = declType.getQualifiedName().toString();
-            if (qualifiedName.equals(String.class.getCanonicalName())) {
+            if (types.isSameType(returnType, stringMirror)) {
                 return "$" + avId + ":T.builder().s(" + valueVar + ").build()";
+            } else if (types.isSubtype(returnType, listMirror) || types.isSubtype(returnType, setMirror)) {
+                var innerType = ((DeclaredType)returnType).getTypeArguments().get(0);
+                var tmpVar = "t" + ++paramNumber;
+                var collectors = "t" + ++paramNumber;
+                formatData.put(collectors, Collectors.class);
+                return "$" + avId + ":T.builder().l(" + valueVar + ".stream()"
+                           + ".map(" + tmpVar + " -> " + buildAttributeEncodeExpression(tmpVar, null, innerType, formatData) + ")"
+                           + ".collect($" + collectors + ":T.toList())).build()";
             } else {
-                throw new TableException("Don't know how to encode class " + declType.getQualifiedName());
+                throw new TableException("Don't know how to encode class " + returnType);
             }
         } else {
             // We have a codec for this class. Simply call it.
-            return codecClassToCodecVar.get(metadata.codecClass) + ".encode(" + valueVar + ")";
+            return codecClassToCodecVar.get(codecClass) + ".encode(" + valueVar + ")";
+        }
+    }
+
+    private String buildAttributeDecodeExpression(String valueVar, TypeMirror codecClass, TypeMirror returnType, Map<String, Object> formatData)
+        throws TableException {
+        if (codecClass == null) {
+            var typeId = "t" + ++paramNumber;
+            switch (returnType.getKind()) {
+                case INT:
+                    formatData.put(typeId, Integer.class);
+                    return "$" + typeId + ":T.parseInt(" + valueVar + ".n())";
+                case LONG:
+                    formatData.put(typeId, Long.class);
+                    return "$" + typeId + ":T.parseLong(" + valueVar + ".n())";
+                case BYTE:
+                    formatData.put(typeId, Byte.class);
+                    return "$" + typeId + ":T.parseByte(" + valueVar + ".n())";
+                case FLOAT:
+                    formatData.put(typeId, Float.class);
+                    return "$" + typeId + ":T.parseFloat(" + valueVar + ".n())";
+                case DOUBLE:
+                    formatData.put(typeId, Double.class);
+                    return "$" + typeId + ":T.parseDouble(" + valueVar + ".n())";
+                case SHORT:
+                    formatData.put(typeId, Short.class);
+                    return "$" + typeId + ":T.parseShort(" + valueVar + ".n())";
+                case DECLARED:
+                    break;
+                default:
+                    throw new TableException("Unknown typeKind " + returnType.getKind());
+            }
+            if (types.isSameType(returnType, stringMirror)) {
+                return valueVar + ".s()";
+            } else if (types.isSubtype(returnType, listMirror) || types.isSubtype(returnType, setMirror)) {
+                var collectorFunc = (types.isSubtype(returnType, listMirror) ? "toList" : "toSet");
+                var innerType = ((DeclaredType)returnType).getTypeArguments().get(0);
+                var tmpVar = "t" + ++paramNumber;
+                var collectors = "t" + ++paramNumber;
+                formatData.put(collectors, Collectors.class);
+                return valueVar + ".l().stream()"
+                           + ".map(" + tmpVar + " -> " + buildAttributeDecodeExpression(tmpVar, null, innerType, formatData) + ")"
+                           + ".collect($" + collectors + ":T." + collectorFunc + "())";
+            } else {
+                throw new TableException("Don't know how to encode class " + returnType);
+            }
+        } else {
+            // We have a codec for this class. Simply call it.
+            return codecClassToCodecVar.get(codecClass) + ".decode(" + valueVar + ")";
         }
     }
 

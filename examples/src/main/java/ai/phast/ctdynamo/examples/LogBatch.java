@@ -5,6 +5,7 @@ import ai.phast.ctdynamo.annotations.DynamoDoc;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 
 import java.time.Instant;
+import java.util.List;
 
 @DynamoDoc()
 public class LogBatch {
@@ -14,6 +15,8 @@ public class LogBatch {
     private int batchNum;
 
     private Instant date;
+
+    private List<String> messages;
 
     @DynamoPartitionKey
     public String getId() {
@@ -39,5 +42,13 @@ public class LogBatch {
 
     public void setDate(Instant value) {
         date = value;
+    }
+
+    public List<String> getMessages() {
+        return messages;
+    }
+
+    public void setMessages(List<String> value) {
+        messages = value;
     }
 }
