@@ -1,11 +1,14 @@
 package ai.phast.ctdynamo.processor;
 
 import ai.phast.ctdynamo.DynamoTable;
+import ai.phast.ctdynamo.annotations.DefaultCodec;
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
 import ai.phast.ctdynamo.annotations.DynamoIgnore;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 import ai.phast.ctdynamo.annotations.DynamoSortKey;
 import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.CodeBlock;
+import com.squareup.javapoet.FieldSpec;
 import com.squareup.javapoet.JavaFile;
 import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
@@ -18,10 +21,14 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Supplier;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
@@ -51,7 +58,13 @@ public class TableWriter {
     /** Mirror type of Map<String, AttributeValue>. Used frequently, so we build it once at constructor time */
     private final TypeMirror dynamoMapMirror;
 
+    private final TypeMirror defaultCodecMirror;
+
+    private int paramNumber = 0;
+
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
+
+    private final Map<TypeMirror, String> codecClassToCodecVar = new HashMap<>();
 
     public TableWriter(TypeElement entryType, Elements elements, Types types) throws TableException {
         this.entryType = entryType;
@@ -60,6 +73,7 @@ public class TableWriter {
         dynamoMapMirror = types.getDeclaredType(elements.getTypeElement(Map.class.getCanonicalName()),
             types.getDeclaredType(elements.getTypeElement(String.class.getCanonicalName())),
             types.getDeclaredType(elements.getTypeElement(AttributeValue.class.getCanonicalName())));
+        defaultCodecMirror = types.getDeclaredType(elements.getTypeElement(DefaultCodec.class.getCanonicalName()));
         for (var element : entryType.getEnclosedElements()) {
             if (element.getKind() == ElementKind.METHOD) {
                 var exec = (ExecutableElement)element;
@@ -80,10 +94,16 @@ public class TableWriter {
             sortKeyAttribute == null
             ? types.getDeclaredType(elements.getTypeElement(Void.class.getCanonicalName()))
             : attributes.get(sortKeyAttribute).returnType);
-        var classSpec = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoTable")
+        var classBuilder = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoTable")
                             .addModifiers(Modifier.PUBLIC)
-                            .superclass(ParameterizedTypeName.get(tableType))
-                            .addMethod(buildConstructor(true, true))
+                            .superclass(ParameterizedTypeName.get(tableType));
+        for (var codecEntry: codecClassToCodecVar.entrySet()) {
+            var field = FieldSpec.builder(TypeName.get(codecEntry.getKey()), codecEntry.getValue(),
+                Modifier.PRIVATE, Modifier.FINAL)
+                .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
+            classBuilder.addField(field.build());
+        }
+        classBuilder.addMethod(buildConstructor(true, true))
                             .addMethod(buildConstructor(true, false))
                             .addMethod(buildConstructor(false, true))
                             .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
@@ -92,23 +112,24 @@ public class TableWriter {
                             .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", sortKeyAttribute))
                             .addMethod(buildEncoder())
                             .addMethod(buildDecoder())
-                            .addMethod(buildGetExclusiveStart())
-                            .build();
+                            .addMethod(buildGetExclusiveStart());
         var qualifiedName = entryType.getQualifiedName().toString();
         var packageSplit = qualifiedName.lastIndexOf('.');
-        return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classSpec).build();
+        return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classBuilder.build()).build();
     }
 
     private void processGetter(ExecutableElement getter) throws TableException {
         if (getter.getAnnotation(DynamoIgnore.class) != null) {
             return; // Ignoring this field.
         }
+        TypeMirror codecClass = null;
         var getterName = getter.getSimpleName().toString();
         var getterReturnType = getter.getReturnType();
         var attributeName = getAttributeName(null, getterName);
         var attributeAnnotation = getter.getAnnotation(DynamoAttribute.class);
         if (attributeAnnotation != null) {
             attributeName = getAttributeName(attributeAnnotation.value(), getterName);
+            codecClass = getCodecClass(attributeAnnotation::codec);
         }
         var partitionKeyAnnotation = getter.getAnnotation(DynamoPartitionKey.class);
         if (partitionKeyAnnotation != null) {
@@ -122,6 +143,7 @@ public class TableWriter {
                 throw new TableException("Cannot have multiple partition keys", getter);
             }
             partitionKeyAttribute = getAttributeName(partitionKeyAnnotation.value(), getterName);
+            codecClass = getCodecClass(partitionKeyAnnotation::codec);
         }
         var sortKeyAnnotation = getter.getAnnotation(DynamoSortKey.class);
         if (sortKeyAnnotation != null) {
@@ -135,8 +157,15 @@ public class TableWriter {
                 throw new TableException("Cannot have multiple sort keys", getter);
             }
             sortKeyAttribute = getAttributeName(sortKeyAnnotation.value(), getterName);
+            codecClass = getCodecClass(sortKeyAnnotation::codec);
         }
-        var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, getterReturnType));
+        if (defaultCodecMirror.equals(codecClass)) {
+            codecClass = null;
+        }
+        if (codecClass != null) {
+            codecClassToCodecVar.computeIfAbsent(codecClass, klass -> "codec" + ++paramNumber);
+        }
+        var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, getterReturnType, codecClass));
         if (prevMetadata != null) {
             throw new TableException("Two getters return attribute " + attributeName, getter);
         }
@@ -187,11 +216,11 @@ public class TableWriter {
         return methodBuilder.build();
     }
 
-    private MethodSpec buildKeyToAttributeValue(String methodName, String attribute) {
+    private MethodSpec buildKeyToAttributeValue(String methodName, String attribute) throws TableException {
         var metadata = (attribute == null ? null : attributes.get(attribute));
         var methodBuilder = MethodSpec.methodBuilder(methodName)
                                 .addAnnotation(Override.class)
-                                .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+                                .addModifiers(Modifier.PROTECTED, Modifier.FINAL)
                                 .returns(AttributeValue.class);
         if (metadata == null) {
             methodBuilder.addParameter(Void.class, "value");
@@ -199,42 +228,34 @@ public class TableWriter {
                 "This table has no sort key");
         } else {
             methodBuilder.addParameter(TypeName.get(metadata.returnType), "value");
-            methodBuilder.addStatement("return $T.builder().s(value).build()", AttributeValue.class);
+            var formatParams = new HashMap<String, Object>();
+            methodBuilder.addNamedCode("return " + buildAttributeEncodeExpression(attribute, "value", formatParams) + ";\n", formatParams);
         }
         return methodBuilder.build();
     }
 
     private MethodSpec buildEncoder() throws TableException {
         var builder = MethodSpec.methodBuilder("encodeToMap")
-            .addAnnotation(Override.class)
-            .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
-            .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
-            .returns(TypeName.get(dynamoMapMirror))
-            .addStatement("$T map = new $T($L)", MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, (attributes.size() * 4 + 2) / 3);
-        new HashMap<String, String>(5);
-        for (var entry: attributes.entrySet()) {
+                          .addAnnotation(Override.class)
+                          .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+                          .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
+                          .returns(TypeName.get(dynamoMapMirror))
+                          .addStatement("$T map = new $T($L)", MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, (attributes.size() * 4 + 2) / 3);
+        var formatParams = new HashMap<String, Object>();
+        for (var entry : attributes.entrySet()) {
             var kind = entry.getValue().returnType.getKind();
-            switch(kind) {
-                case INT:
-                case LONG:
-                case BYTE:
-                case FLOAT:
-                case DOUBLE:
-                case SHORT:
-                    // Any numeric type will be catenated with a string and passed in as a number
-                    builder.addStatement("map.put($S, $T.builder().n($S + value." + entry.getValue().getterName + "()).build())",
-                        entry.getKey(), AttributeValue.class, "");
-                    break;
-                case DECLARED:
-                    // Classes. May be null
-                    var varName = "v" + upcaseFirst(entry.getKey());  // Prepend a "v" and upcase to make sure it is not a reserved word, or the name "map" or "value"
-                    builder.addStatement("$T " + varName + " = value." + entry.getValue().getterName + "()", TypeName.get(entry.getValue().returnType));
-                    builder.beginControlFlow("if (" + varName + " != null)");
-                    builder.addStatement("map.put($S, $T.builder().s(" + varName + ").build())", entry.getKey(), AttributeValue.class);
-                    builder.endControlFlow();
-                    break;
-                default:
-                    throw new TableException("Unknown type kind " + kind);
+            formatParams.clear();
+            var attrNameParam = "s" + ++paramNumber;
+            formatParams.put(attrNameParam, entry.getKey());
+            if (kind.isPrimitive()) {
+                builder.addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(entry.getKey(), null, formatParams) + ");\n", formatParams);
+            } else {
+                // Non-primitives. May be null
+                var varName = "v" + upcaseFirst(entry.getKey());  // Prepend a "v" and upcase to make sure it is not a reserved word, or the name "map" or "value"
+                builder.addStatement("$T " + varName + " = value." + entry.getValue().getterName + "()", TypeName.get(entry.getValue().returnType));
+                builder.beginControlFlow("if (" + varName + " != null)");
+                builder.addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(entry.getKey(), varName, formatParams) + ");\n", formatParams);
+                builder.endControlFlow();
             }
         }
         return builder.addStatement("return map").build();
@@ -257,7 +278,12 @@ public class TableWriter {
                     builder.addStatement("result." + entry.getValue().setterName + "($T.parseInt(attribute.n()))", Integer.class);
                     break;
                 case DECLARED:
-                    builder.addStatement("result." + entry.getValue().setterName + "(attribute.s())");
+                    var codec = entry.getValue().codecClass;
+                    if (codec == null) {
+                        builder.addStatement("result." + entry.getValue().setterName + "(attribute.s())");
+                    } else {
+                        builder.addStatement("result." + entry.getValue().setterName + "(" + codecClassToCodecVar.get(codec) + ".decode(attribute))");
+                    }
                     break;
                 default:
                     throw new TableException("Unknown type kind " + entry.getValue().returnType.getKind());
@@ -267,14 +293,29 @@ public class TableWriter {
         return builder.addStatement("return result").build();
     }
 
-    private MethodSpec buildGetExclusiveStart() {
-        return MethodSpec.methodBuilder("getExclusiveStart")
-                   .addAnnotation(Override.class)
-                   .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
-                   .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
-                   .returns(TypeName.get(dynamoMapMirror))
-                   .addStatement("return null")
-                   .build();
+    private MethodSpec buildGetExclusiveStart() throws TableException {
+        var builder = MethodSpec.methodBuilder("getExclusiveStart")
+                          .addAnnotation(Override.class)
+                          .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+                          .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
+                          .returns(TypeName.get(dynamoMapMirror));
+        var formatParams = new HashMap<String, Object>();
+        if (sortKeyAttribute == null) {
+            formatParams.put("collections", Collections.class);
+            formatParams.put("param", partitionKeyAttribute);
+            builder.addNamedCode("return $collections:T.singletonMap($param:S, "
+                                     + buildAttributeEncodeExpression(partitionKeyAttribute, null, formatParams)
+                                     + ");\n", formatParams);
+        } else {
+            formatParams.put("map", Map.class);
+            formatParams.put("param", partitionKeyAttribute);
+            formatParams.put("sort", sortKeyAttribute);
+            builder.addNamedCode("return $map:T.of($param:S, "
+                                     + buildAttributeEncodeExpression(partitionKeyAttribute, null, formatParams)
+                                     + ", $sort:S, "
+                                     + buildAttributeEncodeExpression(sortKeyAttribute, null, formatParams), formatParams);
+        }
+        return builder.build();
     }
 
     private String buildGetterName(String attributeName) {
@@ -285,15 +326,63 @@ public class TableWriter {
         return Character.toUpperCase(value.charAt(0)) + value.substring(1);
     }
 
+    private String buildAttributeEncodeExpression(String attributeName, String valueVar, Map<String, Object> formatData) throws TableException {
+        var metadata = Objects.requireNonNull(attributes.get(Objects.requireNonNull(attributeName, "Null attribute name")), "No metadata for " + attributeName);
+        if (valueVar == null) {
+            valueVar = "value." + metadata.getterName + "()";
+        }
+        if (metadata.codecClass == null) {
+            var avId = "t" + ++paramNumber;
+            formatData.put(avId, AttributeValue.class);
+            switch (metadata.returnType.getKind()) {
+                case INT:
+                case LONG:
+                case BYTE:
+                case FLOAT:
+                case DOUBLE:
+                case SHORT:
+                    var emptyStrId = "s" + ++paramNumber;
+                    // Any numeric type will be catenated with a string and passed in as a number
+                    formatData.put(emptyStrId, "");
+                    return "$" + avId + ":T.builder().n($" + emptyStrId + ":S + " + valueVar + ").build()";
+                case DECLARED:
+                    break;
+                default:
+                    throw new TableException("Unknown typeKind " + metadata.returnType.getKind());
+            }
+            var declType = (TypeElement)((DeclaredType)metadata.returnType).asElement();
+            var qualifiedName = declType.getQualifiedName().toString();
+            if (qualifiedName.equals(String.class.getCanonicalName())) {
+                return "$" + avId + ":T.builder().s(" + valueVar + ").build()";
+            } else {
+                throw new TableException("Don't know how to encode class " + declType.getQualifiedName());
+            }
+        } else {
+            // We have a codec for this class. Simply call it.
+            return codecClassToCodecVar.get(metadata.codecClass) + ".encode(" + valueVar + ")";
+        }
+    }
+
+    private TypeMirror getCodecClass(Supplier<Class<?>> supplier) throws TableException {
+        try {
+            var klass = supplier.get();
+            throw new TableException("Somehow managed to get class " + klass + " from annotation");
+        } catch (MirroredTypeException e) {
+            return e.getTypeMirror();
+        }
+    }
+
     private static class AttributeMetadata {
         public final String getterName;
         private final String setterName;
         public final TypeMirror returnType;
+        public final TypeMirror codecClass;
 
-        public AttributeMetadata(String getterName, TypeMirror returnType) {
+        public AttributeMetadata(String getterName, TypeMirror returnType, TypeMirror codecClass) {
             this.getterName = getterName;
             setterName = "set" + getterName.substring(3);
             this.returnType = returnType;
+            this.codecClass = codecClass;
         }
     }
 }
