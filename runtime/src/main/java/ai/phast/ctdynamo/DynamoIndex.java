@@ -6,6 +6,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -87,15 +88,17 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
         attributeValues.put(":p", partitionValueToAttributeValue(query.partitionValue));
         if (query.sort1 != null) {
             attributeValues.put(":s1", sortValueToAttributeValue(query.sort1));
-        }
-        if (query.sort2 != null) {
-            attributeValues.put(":s2", sortValueToAttributeValue(query.sort2));
+            if (query.sort2 != null) {
+                attributeValues.put(":s2", sortValueToAttributeValue(query.sort2));
+            }
         }
         if (query.startKey != null) {
             dynamoQueryBuilder.exclusiveStartKey(query.startKey);
         }
         return dynamoQueryBuilder
-                   .expressionAttributeNames(Map.of("#p", partitionKeyAttribute, "#s", sortKeyAttribute))
+                   .expressionAttributeNames(query.sort1 == null
+                                             ? Collections.singletonMap("#p", partitionKeyAttribute)
+                                             : Map.of("#p", partitionKeyAttribute, "#s", sortKeyAttribute))
                    .expressionAttributeValues(attributeValues)
                    .scanIndexForward(query.scanForward)
                    .build();
