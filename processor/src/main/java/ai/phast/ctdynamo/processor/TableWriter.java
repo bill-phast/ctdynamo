@@ -288,8 +288,21 @@ public class TableWriter {
                 .addStatement("return null");
         } else {
             var parameterMetadata = attributes.get(attributeName);
-            methodBuilder.returns(TypeName.get(parameterMetadata.returnType))
-                .addStatement("return value." + parameterMetadata.getterName + "()");
+            methodBuilder.returns(TypeName.get(parameterMetadata.returnType));
+            if (parameterMetadata.returnType.getKind().isPrimitive()) {
+                // Cannot be null
+                methodBuilder.addStatement("return value." + parameterMetadata.getterName + "()");
+            } else {
+                // Check for null
+                methodBuilder.addStatement("$T key = value." + parameterMetadata.getterName + "()", parameterMetadata.returnType)
+                    .beginControlFlow("if (key == null)")
+                    .addStatement("throw new $T($S)", NullPointerException.class,
+                        "Null "
+                            + (attributeName.equals(partitionKeyAttribute) ? "partition" : "sort")
+                            + " key attribute \"" + attributeName + "\"")
+                    .endControlFlow()
+                    .addStatement("return key");
+            }
         }
         return methodBuilder.build();
     }
@@ -321,23 +334,32 @@ public class TableWriter {
                           .addStatement("$T map = new $T($L)", MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, MAP_OF_ATTRIBUTE_VALUES_CLASS_NAME, (attributes.size() * 4 + 2) / 3);
         var formatParams = new HashMap<String, Object>();
         for (var entry : attributes.entrySet()) {
+            var attributeName = entry.getKey();
             var kind = entry.getValue().returnType.getKind();
             formatParams.clear();
             var attrNameParam = "s" + ++paramNumber;
-            formatParams.put(attrNameParam, entry.getKey());
+            formatParams.put(attrNameParam, attributeName);
             if (kind.isPrimitive()) {
-                builder.addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(entry.getKey(), null, formatParams) + ");\n", formatParams);
+                builder.addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(attributeName, null, formatParams) + ");\n", formatParams);
             } else {
                 // Non-primitives. May be null
-                var varName = "v" + upcaseFirst(entry.getKey());  // Prepend a "v" and upcase to make sure it is not a reserved word, or the name "map" or "value"
+                var varName = "v" + upcaseFirst(attributeName);  // Prepend a "v" and upcase to make sure it is not a reserved word, or the name "map" or "value"
                 builder.addStatement("$T " + varName + " = value." + entry.getValue().getterName + "()", TypeName.get(entry.getValue().returnType));
-                if (ignoreNulls) {
+                if (attributeName.equals(partitionKeyAttribute) || attributeName.equals(sortKeyAttribute)) {
+                    builder.beginControlFlow("if (" + varName + " == null)")
+                        .addStatement("throw new $T($S)", NullPointerException.class,
+                            "Null primary "
+                                + (attributeName.equals(partitionKeyAttribute) ? "partition" : "sort")
+                                + " key attribute \"" + attributeName + "\"")
+                        .endControlFlow()
+                        .addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(attributeName, varName, formatParams) + ");\n", formatParams);
+                } else if (ignoreNulls) {
                     builder.beginControlFlow("if (" + varName + " != null)")
-                        .addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(entry.getKey(), varName, formatParams) + ");\n", formatParams)
+                        .addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(attributeName, varName, formatParams) + ");\n", formatParams)
                         .endControlFlow();
                 } else {
                     builder.addNamedCode("map.put($" + attrNameParam + ":S, " + varName + " == null ? NULL_ATTRIBUTE_VALUE : "
-                                             + buildAttributeEncodeExpression(entry.getKey(), varName, formatParams) + ");\n", formatParams);
+                                             + buildAttributeEncodeExpression(attributeName, varName, formatParams) + ");\n", formatParams);
                 }
             }
         }
