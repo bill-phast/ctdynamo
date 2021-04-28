@@ -6,6 +6,8 @@ import ai.phast.ctdynamo.annotations.DynamoItem;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 import ai.phast.ctdynamo.annotations.DynamoSortKey;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
 
 import java.time.Instant;
 import java.util.Comparator;
@@ -13,9 +15,16 @@ import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
+import lombok.Setter;
+import lombok.ToString;
+
 /**
  * This class represents one log batch, so that we could check all logs of current case.
  */
+@Setter
+@Getter
+@EqualsAndHashCode
+@ToString
 @DynamoItem
 public class LogBatch {
 
@@ -40,26 +49,29 @@ public class LogBatch {
     /** Used to extract the service, name, and instance from our partition key */
     private static final Pattern PARTITION_KEY_PARSER = Pattern.compile("(?<service>[^:]+):(?<stage>[^:]+):(?<instance>.+)");
 
-    /** The service that current instance belongs to. */
-    private String service;
+    /** The service that current instance belongs to. In dynamo persisted as part of the partition key, not as a separate attribute */
+    @DynamoIgnore
+    private Service service;
 
-    /** The stage of the service that generated these logs */
+    /** The stage of the service that generated these logs. In dynamo persisted as part of the partition key, not as a separate attribute */
+    @DynamoIgnore
     private String stage;
 
-    /** The lambda instance that currently running. */
+    /** The lambda instance that currently running. In dynamo persisted as part of the partition key, not as a separate attribute */
+    @DynamoIgnore
     private String instance;
 
     /** The case id. */
+    @DynamoAttribute(CASE_ID_ATTRIBUTE)
     private String caseId;
 
     /** The list of log entries. */
+    @DynamoAttribute
     private List<LogEntry> logEntries;
 
     /** The time, in seconds since the epoch, when this database row should be deleted. */
+    @DynamoAttribute
     private long ttl;
-
-    /** The error, which represent if there is an error level entry in current batch. */
-    private String error;
 
     /**
      * Service, stage, and instance are the primary partition key.
@@ -68,7 +80,7 @@ public class LogBatch {
      * @return the service and instance combo as a string.
      * @throws NullPointerException If any of service, stage, or instance are null
      */
-    @DynamoPartitionKey
+    @DynamoPartitionKey(SERVICE_AND_INSTANCE_ATTRIBUTE)
     @JsonIgnore
     public String getServiceAndInstance() {
         return service.toString() + ':' + Objects.requireNonNull(stage) + ':' + Objects.requireNonNull(instance);
@@ -84,7 +96,7 @@ public class LogBatch {
             throw new RuntimeException("Cannot parse serviceAndInstance: " + serviceAndInstance);
         }
         try {
-            service = matcher.group("service");
+            service = Service.valueOf(matcher.group("service"));
         } catch (Exception ex) {
             throw new RuntimeException("Unknown service: " + serviceAndInstance);
         }
@@ -93,60 +105,10 @@ public class LogBatch {
     }
 
     /**
-     * Get the service.
-     * We have service as a variable in Java, but we store it with instance together as a string in DynamoDB,
-     * so we need this get function to add the DynamoDbIgnore.
-     * @return the service as a Service enum.
-     */
-    @DynamoIgnore
-    public String getService() {
-        return service;
-    }
-
-    /**
-     * Get the stage.
-     * We have stage as a variable in Java, but we store it with service together as a string in DynamoDB,
-     * so we need this get function to add the DynamoDbIgnore.
-     * @return the instance as a string.
-     */
-    @DynamoIgnore
-    public String getStage() {
-        return stage;
-    }
-
-    /**
-     * Get the instance.
-     * We have instance as a variable in Java, but we store it with service together as a string in DynamoDB,
-     * so we need this get function to add the DynamoDbIgnore.
-     * @return the instance as a string.
-     */
-    @DynamoIgnore
-    public String getInstance() {
-        return instance;
-    }
-
-    public void setInstance(String value) {
-        instance = value;
-    }
-
-    /**
-     * Case ID is the secondary partition key.
-     * Get the case ID.
-     * @return case id as a string.
-     */
-    public String getCaseId() {
-        return caseId;
-    }
-
-    public void setCaseId(String caseId) {
-        this.caseId = caseId;
-    }
-
-    /**
      * Get the first date of log from log entries.
      * @return the date of first message as a time instant.
      */
-    @DynamoSortKey(codec = InstantCodec.class)
+    @DynamoSortKey(value=DATE_OF_FIRST_MESSAGE_ATTRIBUTE, codec=InstantCodec.class)
     public Instant getDateOfFirstMessage() {
         if (logEntries == null) {
             return null;
@@ -159,28 +121,24 @@ public class LogBatch {
     }
 
     public void setDateOfFirstMessage(Instant value) {
+        // Do nothing
     }
 
     /**
      * Get the log with priority of "ERROR".
      * @return the value of error. It's non-null when any entry from batch has priority ERROR.
      */
+    @DynamoAttribute(ERROR_ATTRIBUTE)
+    @JsonIgnore
     public String getError() {
         if (logEntries == null) {
             return null;
         } else {
-            return logEntries.stream().anyMatch(entry -> entry.getPriority().equals("ERROR")) ? "ERROR" : null;
+            return logEntries.stream().anyMatch(entry -> entry.getPriority() == Priority.ERROR) ? "ERROR" : null;
         }
     }
 
     public void setError(String value) {
-    }
-
-    public List<LogEntry> getLogEntries() {
-        return logEntries;
-    }
-
-    public void setLogEntries(List<LogEntry> value) {
-        logEntries = value;
+        // Do nothing
     }
 }

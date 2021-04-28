@@ -23,16 +23,19 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeKind;
@@ -73,9 +76,13 @@ public class TableWriter {
 
     private final TypeMirror setMirror;
 
+    private final TypeMirror enumMirror;
+
     private int paramNumber = 0;
 
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
+
+    private Set<String> ignoredAttributes = new HashSet<>();
 
     private final Map<TypeName, String> codecClassToCodecVar = new HashMap<>();
 
@@ -95,6 +102,8 @@ public class TableWriter {
             types.getWildcardType(null, null));
         setMirror = types.getDeclaredType(elements.getTypeElement(Set.class.getCanonicalName()),
             types.getWildcardType(null, null));
+        enumMirror = types.getDeclaredType(elements.getTypeElement(Enum.class.getCanonicalName()),
+            types.getWildcardType(null, null));
         for (var element : entryType.getEnclosedElements()) {
             if (element.getKind() == ElementKind.METHOD) {
                 var exec = (ExecutableElement)element;
@@ -102,6 +111,8 @@ public class TableWriter {
                 if (name.startsWith("get") && name.length() >= 4) {
                     processGetter(exec);
                 }
+            } else if (element.getKind() == ElementKind.FIELD) {
+                processField((VariableElement)element);
             }
         }
     }
@@ -132,7 +143,6 @@ public class TableWriter {
         // Add the member variables for the codecs we need. This must be done after all methods are built, because building
         // methods may find more codecs we need.
         for (var codecEntry: codecClassToCodecVar.entrySet()) {
-            System.out.println("ADDING FIELD FOR " + codecEntry.getKey());
             var field = FieldSpec.builder(codecEntry.getKey(), codecEntry.getValue(),
                 Modifier.PRIVATE, Modifier.FINAL)
                             .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
@@ -163,57 +173,81 @@ public class TableWriter {
         return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classBuilder.build()).build();
     }
 
+    private void processField(VariableElement element) throws TableException {
+        var attributeName = element.getSimpleName().toString();
+        if (ignoredAttributes.contains(attributeName)) {
+            // We already got an ignore for this.
+            return;
+        }
+        if (element.getAnnotation(DynamoIgnore.class) != null) {
+            ignoredAttributes.add(attributeName);
+            return;
+        }
+        if (element.getAnnotation(DynamoAttribute.class) != null
+            || element.getAnnotation(DynamoPartitionKey.class) != null
+            || element.getAnnotation(DynamoSortKey.class) != null) {
+            processAttribute(element, "get" + upcaseFirst(attributeName), attributeName, element.asType());
+        }
+    }
+
     private void processGetter(ExecutableElement getter) throws TableException {
+        var getterName = getter.getSimpleName().toString();
+        var attributeName = getAttributeName(null, getterName);
+        if (ignoredAttributes.contains(attributeName)) {
+            // We already got an ignore for this attribute.
+            return;
+        }
         if (getter.getAnnotation(DynamoIgnore.class) != null) {
+            ignoredAttributes.add(attributeName);
             return; // Ignoring this field.
         }
+        processAttribute(getter, getterName, attributeName, getter.getReturnType());
+    }
+
+    private void processAttribute(Element declaringElement, String getterName, String attributeName, TypeMirror attributeType) throws TableException {
         TypeMirror codecType = null;
-        var getterName = getter.getSimpleName().toString();
-        var getterReturnType = getter.getReturnType();
-        var attributeName = getAttributeName(null, getterName);
-        var attributeAnnotation = getter.getAnnotation(DynamoAttribute.class);
+        var attributeAnnotation = declaringElement.getAnnotation(DynamoAttribute.class);
         if (attributeAnnotation != null) {
             attributeName = getAttributeName(attributeAnnotation.value(), getterName);
             codecType = getCodecClass(attributeAnnotation::codec);
         }
-        var partitionKeyAnnotation = getter.getAnnotation(DynamoPartitionKey.class);
+        var partitionKeyAnnotation = declaringElement.getAnnotation(DynamoPartitionKey.class);
         if (partitionKeyAnnotation != null) {
             if (attributeAnnotation != null) {
                 throw new TableException("At most one of " + DynamoPartitionKey.class.getSimpleName()
                                              + ", " + DynamoSortKey.class.getSimpleName()
                                              + ", or " + DynamoAttribute.class.getSimpleName()
-                                             + " may be provided for each method", getter);
+                                             + " may be provided for each method", declaringElement);
             }
             if (partitionKeyAttribute != null) {
-                throw new TableException("Cannot have multiple partition keys", getter);
+                throw new TableException("Cannot have multiple partition keys", declaringElement);
             }
             partitionKeyAttribute = getAttributeName(partitionKeyAnnotation.value(), getterName);
             codecType = getCodecClass(partitionKeyAnnotation::codec);
         }
-        var sortKeyAnnotation = getter.getAnnotation(DynamoSortKey.class);
+        var sortKeyAnnotation = declaringElement.getAnnotation(DynamoSortKey.class);
         if (sortKeyAnnotation != null) {
             if (partitionKeyAnnotation != null || attributeAnnotation != null) {
                 throw new TableException("At most one of " + DynamoPartitionKey.class.getSimpleName()
                                              + ", " + DynamoSortKey.class.getSimpleName()
                                              + ", or " + DynamoAttribute.class.getSimpleName()
-                                             + " may be provided for each method", getter);
+                                             + " may be provided for each method", declaringElement);
             }
             if (sortKeyAttribute != null) {
-                throw new TableException("Cannot have multiple sort keys", getter);
+                throw new TableException("Cannot have multiple sort keys", declaringElement);
             }
             sortKeyAttribute = getAttributeName(sortKeyAnnotation.value(), getterName);
             codecType = getCodecClass(sortKeyAnnotation::codec);
         }
         var codecName = (codecType == null || defaultCodecMirror.equals(codecType) ? null : TypeName.get(codecType));
-        System.out.println("RETURN TYPE = " + getterReturnType + ", codecName=" + codecName);
         if (codecName == null) {
-            codecName = findCodecClass(getterReturnType);
+            codecName = findCodecClass(attributeType);
         } else {
             codecClassToCodecVar.computeIfAbsent(codecName, klass -> "codec" + ++paramNumber);
         }
-        var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, getterReturnType, codecName));
+        var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, attributeType, codecName));
         if (prevMetadata != null) {
-            throw new TableException("Two getters return attribute " + attributeName, getter);
+            throw new TableException("Two getters return attribute " + attributeName, declaringElement);
         }
     }
 
@@ -368,10 +402,6 @@ public class TableWriter {
         return builder.build();
     }
 
-    private String buildGetterName(String attributeName) {
-        return "get" + Character.toUpperCase(attributeName.charAt(0)) + attributeName.substring(1);
-    }
-
     private String upcaseFirst(String value) {
         return Character.toUpperCase(value.charAt(0)) + value.substring(1);
     }
@@ -409,6 +439,8 @@ public class TableWriter {
                 case SHORT:
                     formatData.put(typeId, Short.class);
                     return "$" + avId + ":T.builder().n($" + typeId + ":T.toString(" + valueVar + ")).build()";
+                case BOOLEAN:
+                    return "$" + avId + ":T.builder().bool(" + valueVar + ").build()";
                 case DECLARED:
                     break;
                 default:
@@ -424,7 +456,10 @@ public class TableWriter {
                 return "$" + avId + ":T.builder().l(" + valueVar + ".stream()"
                            + ".map(" + tmpVar + " -> " + buildAttributeEncodeExpression(tmpVar, null, innerType, formatData) + ")"
                            + ".collect($" + collectors + ":T.toList())).build()";
+            } else if (types.isSubtype(returnType, enumMirror)) {
+                return "$" + avId + ":T.builder().s(" + valueVar + ".name()).build()";
             } else {
+                // See if we can find a codec for this class. Otherwise we can't encode it.
                 codecClass = findCodecClass(returnType);
                 if (codecClass == null) {
                     throw new TableException("Don't know how to encode class " + returnType);
@@ -461,6 +496,8 @@ public class TableWriter {
                 case SHORT:
                     formatData.put(typeId, Short.class);
                     return "$" + typeId + ":T.parseShort(" + valueVar + ".n())";
+                case BOOLEAN:
+                    return "valueVar.bool()";
                 case DECLARED:
                     break;
                 default:
@@ -477,10 +514,14 @@ public class TableWriter {
                 return valueVar + ".l().stream()"
                            + ".map(" + tmpVar + " -> " + buildAttributeDecodeExpression(tmpVar, null, innerType, formatData) + ")"
                            + ".collect($" + collectors + ":T." + collectorFunc + "())";
+            } else if (types.isSubtype(returnType, enumMirror)) {
+                formatData.put(typeId, returnType);
+                return "$" + typeId + ":T.valueOf(" + valueVar + ".s())";
             } else {
+                // See if we can find a codec for this class. Otherwise we can't decode it.
                 codecClass = findCodecClass(returnType);
                 if (codecClass == null) {
-                    throw new TableException("Don't know how to encode class " + returnType);
+                    throw new TableException("Don't know how to decode class " + returnType);
                 } else {
                     return codecClassToCodecVar.get(codecClass) + ".decode(" + valueVar + ")";
                 }
@@ -492,12 +533,9 @@ public class TableWriter {
     }
 
     private TypeName findCodecClass(TypeMirror baseType) {
-        System.out.println("FIND_CODEC_CLASS(" + baseType + ")");
         if (baseType.getKind() == TypeKind.DECLARED) {
-            System.out.println("  Is declared");
             // Check to see if this is based on a class that has a DynamoItem annotation
             var itemAnnotation = ((DeclaredType)baseType).asElement().getAnnotation(DynamoItem.class);
-            System.out.println("  Annotation = " + itemAnnotation);
             if (itemAnnotation != null && Arrays.asList(itemAnnotation.value()).contains(DynamoItem.Output.CODEC)) {
                 // This gets a little tricky. We can't just create a TypeMirror, because the codec class will be generated by
                 // us, so it doesn't exist yet. I think be working with the "stage" system of annotation processing we can
