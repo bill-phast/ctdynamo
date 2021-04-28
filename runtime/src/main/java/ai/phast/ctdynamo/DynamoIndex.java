@@ -1,6 +1,5 @@
 package ai.phast.ctdynamo;
 
-import org.w3c.dom.Attr;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -10,6 +9,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
 
@@ -58,42 +58,47 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
         return sortKeyAttribute;
     }
 
-    public QueryBuilder query(PartitionT partitionValue) {
-        return new QueryBuilder(partitionValue);
+    public Query query(PartitionT partitionValue) {
+        return new Query(partitionValue);
     }
 
-    private QueryResponse go(QueryBuilder query) {
-        var dynamoQueryBuilder = QueryRequest.builder()
-                                     .tableName(tableName);
+    private QueryResponse invoke(Query query) {
+        var request = buildQueryRequest(query);
+        return (client == null ? asyncClient.query(request).join() : client.query(request));
+    }
+
+    private CompletableFuture<QueryResponse> invokeAsync(Query query) {
+        var request = buildQueryRequest(query);
+        return (asyncClient == null ? CompletableFuture.supplyAsync(() -> client.query(request)) : asyncClient.query(request));
+    }
+
+    private QueryRequest buildQueryRequest(Query query) {
+        var dynamoQueryBuilder = QueryRequest.builder().tableName(tableName);
         if (indexName != null) {
             dynamoQueryBuilder.indexName(indexName);
         }
         var attributeValues = new HashMap<String, AttributeValue>();
-        var keyExpression = new StringBuilder("#p = :p");
-        dynamoQueryBuilder.expressionAttributeNames(Map.of(
-            "#p", partitionKeyAttribute,
-            "#s", sortKeyAttribute))
-            .expressionAttributeValues(attributeValues)
-            .keyConditionExpression(keyExpression.toString())
-            .scanIndexForward(query.scanForward);
         if (query.pageSize < Integer.MAX_VALUE) {
             dynamoQueryBuilder.limit(query.pageSize);
         } else if (query.limit < Integer.MAX_VALUE) {
             dynamoQueryBuilder.limit(query.limit);
         }
+        dynamoQueryBuilder.keyConditionExpression(query.keyExpression == null ? "#p = :p" : query.keyExpression);
         attributeValues.put(":p", partitionValueToAttributeValue(query.partitionValue));
-        if (query.sortLo != null) {
-            attributeValues.put(":s1", sortValueToAttributeValue(query.sortLo));
-            keyExpression.append(query.loInclusive ? " AND #s >= :s1" : " AND #s > :s1");
+        if (query.sort1 != null) {
+            attributeValues.put(":s1", sortValueToAttributeValue(query.sort1));
         }
-        if (query.sortHi != null) {
-            attributeValues.put(":s2", sortValueToAttributeValue(query.sortHi));
-            keyExpression.append(query.hiInclusive ? " AND #s <= :s2" : " AND #s < :s2");
+        if (query.sort2 != null) {
+            attributeValues.put(":s2", sortValueToAttributeValue(query.sort2));
         }
         if (query.startKey != null) {
             dynamoQueryBuilder.exclusiveStartKey(query.startKey);
         }
-        return client.query(dynamoQueryBuilder.build());
+        return dynamoQueryBuilder
+                   .expressionAttributeNames(Map.of("#p", partitionKeyAttribute, "#s", sortKeyAttribute))
+                   .expressionAttributeValues(attributeValues)
+                   .scanIndexForward(query.scanForward)
+                   .build();
     }
 
     protected abstract AttributeValue partitionValueToAttributeValue(PartitionT partitionValue);
@@ -116,17 +121,16 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
 
     public abstract Map<String, AttributeValue> getExclusiveStart(T value);
 
-    public final class QueryBuilder {
+    public final class Query {
 
         private final PartitionT partitionValue;
 
-        private SortT sortLo;
+        /** Our key expression. Null if we are only checking the partition key */
+        private String keyExpression;
 
-        private boolean loInclusive = true;
+        private SortT sort1;
 
-        private SortT sortHi;
-
-        private boolean hiInclusive = true;
+        private SortT sort2;
 
         private boolean scanForward = true;
 
@@ -136,40 +140,76 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
 
         private int pageSize = Integer.MAX_VALUE;
 
-        private QueryBuilder(PartitionT partitionValue) {
+        private Query(PartitionT partitionValue) {
+            if (partitionValue == null) {
+                throw new NullPointerException("partitionValue must not be null");
+            }
             this.partitionValue = partitionValue;
         }
 
-        public QueryBuilder sortBounds(SortT lo, boolean loInclusive, SortT hi, boolean hiInclusive) {
-            sortLo = lo;
-            this.loInclusive = loInclusive;
-            sortHi = hi;
-            this.hiInclusive = hiInclusive;
+        public Query sortBetween(SortT lo, SortT hi) {
+            if (keyExpression != null) {
+                throw new IllegalArgumentException("Only one sort expression can be used");
+            }
+            keyExpression = "#p = :p AND #s BETWEEN :s1 AND :s2";
+            sort1 = lo;
+            sort2 = hi;
             return this;
         }
 
-        public QueryBuilder scanForward(boolean value) {
+        public Query sortAbove(SortT bound, boolean inclusive) {
+            if (keyExpression != null) {
+                throw new IllegalArgumentException("Only one sort expression can be used");
+            }
+            sort1 = bound;
+            keyExpression = (inclusive ? "#p = :p AND #s >= :s1" : "#p = :p AND #s > :s1");
+            return this;
+        }
+
+        public Query sortBelow(SortT bound, boolean inclusive) {
+            if (keyExpression != null) {
+                throw new IllegalArgumentException("Only one sort expression can be used");
+            }
+            sort1 = bound;
+            keyExpression = (inclusive ? "#p = :p AND #s <= :s1" : "#p = :p AND #s < :s1");
+            return this;
+        }
+
+        public Query sortPrefix(SortT prefix) {
+            if (keyExpression != null) {
+                throw new IllegalArgumentException("Only one sort expression can be used");
+            }
+            sort1 = prefix;
+            keyExpression = "#p = :p AND begins_with(#s, :s1)";
+            return this;
+        }
+
+        public Query scanForward(boolean value) {
             scanForward = value;
             return this;
         }
 
-        public QueryBuilder limit(int value) {
+        public Query limit(int value) {
             limit = value;
             return this;
         }
 
-        public QueryBuilder pageSize(int value) {
+        public Query pageSize(int value) {
             pageSize = value;
             return this;
         }
 
-        public QueryBuilder startKey(Map<String, AttributeValue> value) {
+        public Query startKey(Map<String, AttributeValue> value) {
             startKey = value;
             return this;
         }
 
-        public QueryResponse go() {
-            return DynamoIndex.this.go(this);
+        public QueryResponse invoke() {
+            return DynamoIndex.this.invoke(this);
+        }
+
+        public CompletableFuture<QueryResponse> invokeAsync() {
+            return DynamoIndex.this.invokeAsync(this);
         }
     }
 }
