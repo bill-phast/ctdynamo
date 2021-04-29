@@ -11,7 +11,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-public class QueryResult<T> implements Iterable<T>, Iterator<T> {
+public class QueryResult<T> implements Iterable<T> {
 
     private final QueryRequest.Builder queryBuilder;
 
@@ -22,8 +22,6 @@ public class QueryResult<T> implements Iterable<T>, Iterator<T> {
     private final Integer limit;
 
     private int totalConsumed = 0;
-
-    private boolean done = false;
 
     private Iterator<Map<String, AttributeValue>> responseIterator = null;
 
@@ -37,71 +35,76 @@ public class QueryResult<T> implements Iterable<T>, Iterator<T> {
     }
 
     private void doRequest() {
-        if (futureResponse != null) {
-            throw new RuntimeException("Got doRequest while we have a pending request");
-        }
         var request = queryBuilder.build();
         futureResponse = (index.getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> index.getClient().query(request)) : index.getAsyncClient().query(request));
     }
 
-    @Override
-    public boolean hasNext() {
+    private boolean iteratorHasNext() {
         while (true) {
-            if (responseIterator != null) {
-                if (responseIterator.hasNext()) {
-                    // We have an iterator, it has another element, thus we have another.
-                    return true;
-                }
-                if (done) {
-                    // We have an iterator, it has no more elements, we are done. Thus we have no more elements.
-                    return false;
-                }
-                // We have an iterator, it has no more elements, but we are not done! Wait for the next task to
-                // finish.
+            if ((responseIterator != null) && responseIterator.hasNext()) {
+                // We have an iterator, it has another element
+                return true;
             }
+            responseIterator = null; // Indicate we do not have a useful iterator
+            if (futureResponse == null) {
+                // We have nothing from a current itorator and nothing coming.
+                return false;
+            }
+
             // Now we have released our lock so we can join with our worker thread.
             var response = futureResponse.join();
             futureResponse = null;
-            var list = (response.hasItems() ? response.items()
-                                            : Collections.<Map<String, AttributeValue>>emptyList());
-            int listSize = list.size();
-            if (response.lastEvaluatedKey() == null) {
-                // There are no responses after this one. We are done once we process this one.
-                done = true;
-            }
-            if (limit != null && listSize + totalConsumed >= limit) {
-                // Once we process this, we will have read our limit.
-                done = true;
-                if (listSize + totalConsumed > limit) {
-                    listSize = limit - totalConsumed;
-                    list = list.subList(0, listSize);
-                    exclusiveStart = list.get(listSize - 1);
-                } else {
-                    exclusiveStart = response.lastEvaluatedKey();
+            var nextQueryStart = response.lastEvaluatedKey();
+            var lastItemSeen = nextQueryStart;
+            if (response.hasItems()) {
+                var list = response.items();
+                var listSize = list.size();
+                if ((limit != null) && (listSize + totalConsumed >= limit)) {
+                    nextQueryStart = null; // Don't ask for another page
+                    if (listSize + totalConsumed > limit) {
+                        // Oops, we got too much. Chop off the tail of our list.
+                        listSize = limit - totalConsumed;
+                        // Chop the list down to the size we want. Save the last item from this shorter list.
+                        lastItemSeen = list.get(listSize - 1);
+                        list = list.subList(0, listSize);
+                    }
                 }
+                totalConsumed += listSize;
+                responseIterator = list.iterator();
             }
-            totalConsumed += listSize;
-            responseIterator = list.iterator();
-            if (!done) {
-                // We aren't done, so let's start another query from where we left off.
-                queryBuilder.exclusiveStartKey(response.lastEvaluatedKey());
+            if (nextQueryStart == null) {
+                // Not asking for another page. Record the last item seen (if it exists) as the next query start.
+                exclusiveStart = lastItemSeen;
+            } else {
+                // Ask for another page
+                queryBuilder.exclusiveStartKey(nextQueryStart);
                 doRequest();
             }
         }
     }
 
-    @Override
-    public synchronized T next() {
+    private T iteratorNext() {
         return index.decode(responseIterator.next());
     }
 
     @Override
     public Iterator<T> iterator() {
-        return this;
+        return new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                return iteratorHasNext();
+            }
+
+            @Override
+            public T next() {
+                return iteratorNext();
+            }
+        };
     }
 
     private Map<String, AttributeValue> getExclusiveStart() {
-        if (!done) {
+        if ((futureResponse != null) || (responseIterator != null)) {
+            // Not allowed to ask for the exclusive start until we have reached the end
             throw new IllegalStateException();
         }
         return exclusiveStart;
