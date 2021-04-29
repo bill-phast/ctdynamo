@@ -19,7 +19,7 @@ public class QueryResult<T> implements Iterable<T> {
 
     private final DynamoIndex<T, ?, ?> index;
 
-    private final Integer limit;
+    private final int limit;
 
     private int totalConsumed = 0;
 
@@ -27,11 +27,14 @@ public class QueryResult<T> implements Iterable<T> {
 
     private Map<String, AttributeValue> exclusiveStart;
 
-    QueryResult(DynamoIndex<T, ?, ?> index, QueryRequest.Builder queryBuilder, Integer limit) {
+    QueryResult(DynamoIndex<T, ?, ?> index, QueryRequest.Builder queryBuilder, int limit) {
         this.queryBuilder = queryBuilder;
         this.index = index;
         this.limit = limit;
-        doRequest();
+        if (limit != 0) {
+            // Limit 0 is a special case. We never bother to do a request then.
+            doRequest();
+        }
     }
 
     private void doRequest() {
@@ -59,7 +62,7 @@ public class QueryResult<T> implements Iterable<T> {
             if (response.hasItems()) {
                 var list = response.items();
                 var listSize = list.size();
-                if ((limit != null) && (listSize + totalConsumed >= limit)) {
+                if ((limit >= 0) && (listSize + totalConsumed >= limit)) {
                     nextQueryStart = null; // Don't ask for another page
                     if (listSize + totalConsumed > limit) {
                         // Oops, we got too much. Chop off the tail of our list.

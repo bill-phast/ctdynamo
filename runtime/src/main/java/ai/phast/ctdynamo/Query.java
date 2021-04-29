@@ -19,9 +19,9 @@ public final class Query<T, PartitionT, SortT> {
 
     private boolean sortSet = false;
 
-    private Integer limit;
+    private int limit = -1;
 
-    private Integer pageSize;
+    private int pageSize = -1;
 
     Query(DynamoIndex<T, PartitionT, SortT> index, PartitionT partitionValue) {
         this.index = index;
@@ -93,8 +93,8 @@ public final class Query<T, PartitionT, SortT> {
     }
 
     public QueryResult<T> invoke() {
-        if (pageSize == null) {
-            if (limit != null) {
+        if (pageSize <= 0) {
+            if (limit >= 0) {
                 builder.limit(limit);
             }
         } else {
