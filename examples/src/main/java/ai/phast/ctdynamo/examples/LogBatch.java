@@ -61,6 +61,12 @@ public class LogBatch {
     @DynamoIgnore
     private String instance;
 
+    @DynamoAttribute
+    private Integer boxyInt;
+
+    @DynamoAttribute
+    private Boolean boxyBool;
+
     /** The case id. */
     @DynamoAttribute(CASE_ID_ATTRIBUTE)
     private String caseId;

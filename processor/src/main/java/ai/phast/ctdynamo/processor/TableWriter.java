@@ -38,6 +38,7 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
+import javax.lang.model.type.PrimitiveType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
@@ -78,6 +79,8 @@ public class TableWriter {
 
     private final TypeMirror enumMirror;
 
+    private final List<TypeMirror> boxedPrimitiveMirrors;
+
     private int paramNumber = 0;
 
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
@@ -104,6 +107,10 @@ public class TableWriter {
             types.getWildcardType(null, null));
         enumMirror = types.getDeclaredType(elements.getTypeElement(Enum.class.getCanonicalName()),
             types.getWildcardType(null, null));
+        boxedPrimitiveMirrors = List.of(TypeKind.INT, TypeKind.BYTE, TypeKind.LONG, TypeKind.FLOAT, TypeKind.DOUBLE, TypeKind.SHORT, TypeKind.BOOLEAN)
+            .stream().map(kind -> types.boxedClass(types.getPrimitiveType(kind)).asType())
+            .collect(Collectors.toList());
+
         for (var element : entryType.getEnclosedElements()) {
             if (element.getKind() == ElementKind.METHOD) {
                 var exec = (ExecutableElement)element;
@@ -480,6 +487,11 @@ public class TableWriter {
                            + ".collect($" + collectors + ":T.toList())).build()";
             } else if (types.isSubtype(returnType, enumMirror)) {
                 return "$" + avId + ":T.builder().s(" + valueVar + ".name()).build()";
+            } else if (returnType.equals(types.boxedClass(types.getPrimitiveType(TypeKind.BOOLEAN)).asType())) {
+                return "$" + avId + ":T.builder().bool(" + valueVar + ").build()";
+            } else if (boxedPrimitiveMirrors.contains(returnType)) {
+                // boolean is in here too, but we check that first
+                return "$" + avId + ":T.builder().n(" + valueVar + ".toString()).build()";
             } else {
                 // See if we can find a codec for this class. Otherwise we can't encode it.
                 codecClass = findCodecClass(returnType);
@@ -536,7 +548,7 @@ public class TableWriter {
                 return valueVar + ".l().stream()"
                            + ".map(" + tmpVar + " -> " + buildAttributeDecodeExpression(tmpVar, null, innerType, formatData) + ")"
                            + ".collect($" + collectors + ":T." + collectorFunc + "())";
-            } else if (types.isSubtype(returnType, enumMirror)) {
+            } else if (types.isSubtype(returnType, enumMirror) || boxedPrimitiveMirrors.contains(returnType)) {
                 formatData.put(typeId, returnType);
                 return "$" + typeId + ":T.valueOf(" + valueVar + ".s())";
             } else {
