@@ -2,11 +2,9 @@ package ai.phast.ctdynamo;
 
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
-import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 public final class Query<T, PartitionT, SortT> {
 
@@ -17,7 +15,7 @@ public final class Query<T, PartitionT, SortT> {
 
     private final DynamoIndex<T, PartitionT, SortT> index;
 
-    private boolean sortSet = false;
+    private boolean sortIsSet = false;
 
     private int limit = -1;
 
@@ -32,10 +30,10 @@ public final class Query<T, PartitionT, SortT> {
     }
 
     public Query<T, PartitionT, SortT> sortBetween(SortT lo, SortT hi) {
-        if (sortSet) {
+        if (sortIsSet) {
             throw new IllegalArgumentException("Only one sort expression can be used");
         }
-        sortSet = true;
+        sortIsSet = true;
         builder.keyConditionExpression("#p = :p AND #s BETWEEN :s1 AND :s2");
         values.put(":s1", index.sortValueToAttributeValue(lo));
         values.put(":s2", index.sortValueToAttributeValue(hi));
@@ -43,30 +41,30 @@ public final class Query<T, PartitionT, SortT> {
     }
 
     public Query<T, PartitionT, SortT> sortAbove(SortT bound, boolean inclusive) {
-        if (sortSet) {
+        if (sortIsSet) {
             throw new IllegalArgumentException("Only one sort expression can be used");
         }
-        sortSet = true;
+        sortIsSet = true;
         builder.keyConditionExpression(inclusive ? "#p = :p AND #s >= :s1" : "#p = :p AND #s > :s1");
         values.put(":s1", index.sortValueToAttributeValue(bound));
         return this;
     }
 
     public Query<T, PartitionT, SortT> sortBelow(SortT bound, boolean inclusive) {
-        if (sortSet) {
+        if (sortIsSet) {
             throw new IllegalArgumentException("Only one sort expression can be used");
         }
-        sortSet = true;
+        sortIsSet = true;
         builder.keyConditionExpression(inclusive ? "#p = :p AND #s <= :s1" : "#p = :p AND #s < :s1");
         values.put(":s1", index.sortValueToAttributeValue(bound));
         return this;
     }
 
     public Query<T, PartitionT, SortT> sortPrefix(SortT prefix) {
-        if (sortSet) {
+        if (sortIsSet) {
             throw new IllegalArgumentException("Only one sort expression can be used");
         }
-        sortSet = true;
+        sortIsSet = true;
         builder.keyConditionExpression("#p = :p AND begins_with(#s, :s1)");
         values.put(":s1", index.sortValueToAttributeValue(prefix));
         return this;
