@@ -195,7 +195,7 @@ public class TableWriter {
                                .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", metadata.partitonAttribute))
                                .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", metadata.sortAttribute))
                                .addMethod(buildDecoder(false))
-                               .addMethod(buildGetExclusiveStart());
+                               .addMethod(buildGetExclusiveStart(metadata.partitonAttribute, metadata.getSortAttribute()));
         return classBuilder.build();
     }
 
@@ -459,28 +459,43 @@ public class TableWriter {
         return builder.addStatement("return result").build();
     }
 
-    private MethodSpec buildGetExclusiveStart() throws TableException {
+    private MethodSpec buildGetExclusiveStart(String... secondaryKeys) throws TableException {
         var builder = MethodSpec.methodBuilder("getExclusiveStart")
                           .addAnnotation(Override.class)
                           .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                           .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
                           .returns(TypeName.get(dynamoMapMirror));
         var formatParams = new HashMap<String, Object>();
-        if (sortKeyAttribute == null) {
+        if ((sortKeyAttribute) == null && (secondaryKeys.length == 0)) {
             formatParams.put("collections", Collections.class);
             formatParams.put("param", partitionKeyAttribute);
             builder.addNamedCode("return $collections:T.singletonMap($param:S, "
                                      + buildAttributeEncodeExpression(partitionKeyAttribute, null, formatParams)
                                      + ");\n", formatParams);
         } else {
+            var keys = new HashSet<String>();
+            keys.add(partitionKeyAttribute);
+            if (sortKeyAttribute != null) {
+                keys.add(sortKeyAttribute);
+            }
+            Collections.addAll(keys, secondaryKeys);
             formatParams.put("map", Map.class);
             formatParams.put("param", partitionKeyAttribute);
             formatParams.put("sort", sortKeyAttribute);
-            builder.addNamedCode("return $map:T.of($param:S, "
-                                     + buildAttributeEncodeExpression(partitionKeyAttribute, null, formatParams)
-                                     + ", $sort:S, "
-                                     + buildAttributeEncodeExpression(sortKeyAttribute, null, formatParams)
-                                     + ");\n", formatParams);
+            var template = new StringBuilder("return $map:T.of(");
+            var first = true;
+            for (var key: keys) {
+                var param = "v" + ++paramNumber;
+                if (first) {
+                    first = false;
+                } else {
+                    template.append(", ");
+                }
+                formatParams.put(param, key);
+                template.append("$").append(param).append(":S, ")
+                    .append(buildAttributeEncodeExpression(key, null, formatParams));
+            }
+            builder.addNamedCode(template.append(");\n").toString(), formatParams);
         }
         return builder.build();
     }
