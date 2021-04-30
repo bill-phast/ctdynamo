@@ -3,16 +3,11 @@ package ai.phast.ctdynamo;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
-import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
 
-public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
+public abstract class DynamoIndex<T, PartitionT, SortT> {
 
     private final String tableName;
 
@@ -74,18 +69,6 @@ public abstract class DynamoIndex<T, PartitionT, SortT> extends DynamoCodec<T> {
     protected abstract AttributeValue partitionValueToAttributeValue(PartitionT partitionValue);
 
     protected abstract AttributeValue sortValueToAttributeValue(SortT sortValue);
-
-    @Override
-    public final AttributeValue encode(T value) {
-        return AttributeValue.builder().m(encodeToMap(value)).build();
-    }
-
-    public abstract Map<String, AttributeValue> encodeToMap(T value);
-
-    @Override
-    public final T decode(AttributeValue dynamoValue) {
-        return decode(dynamoValue.m());
-    }
 
     public abstract T decode(Map<String, AttributeValue> map);
 

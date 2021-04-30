@@ -350,7 +350,7 @@ public class TableWriter {
     }
 
     private MethodSpec buildEncoder(boolean toAttributeValue) throws TableException {
-        var builder = MethodSpec.methodBuilder(toAttributeValue ? "encode" : "encodeToMap")
+        var builder = MethodSpec.methodBuilder("encode")
                           .addAnnotation(Override.class)
                           .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                           .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value")
@@ -446,6 +446,19 @@ public class TableWriter {
                                      + ");\n", formatParams);
         }
         return builder.build();
+    }
+
+    /**
+     * Turn an index name into the name of a class. Replace illegal java class name characters with underscores, upcase
+     * the first character, and append the word "Index" at the end.
+     * @param indexName The name of the index
+     * @return An inner class name.
+     */
+    private String indexNameToClassName(String indexName) {
+        if (Character.isDigit(indexName.charAt(0))) {
+            indexName = "n" + indexName;  // Prepend a "n" so we don't start with a digit.
+        }
+        return upcaseFirst(indexName.replace('.', '_').replace('-', '_')) + "Index";
     }
 
     private String upcaseFirst(String value) {
@@ -645,7 +658,7 @@ public class TableWriter {
 
         public void setSortAttribute(String value) throws TableException {
             if ((sortAttribute != null) && !sortAttribute.equals(value)) {
-                throw new TableException(("Secondary sort attribute set twice: " + partitonAttribute + " and " + value);
+                throw new TableException(("Secondary sort attribute set twice: " + partitonAttribute + " and " + value));
             }
             sortAttribute = value;
         }
