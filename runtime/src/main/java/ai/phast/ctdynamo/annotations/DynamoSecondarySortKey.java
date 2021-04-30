@@ -8,6 +8,6 @@ import java.lang.annotation.Target;
 @Target({ElementType.FIELD, ElementType.METHOD}) @Retention(RetentionPolicy.SOURCE)
 public @interface DynamoSecondarySortKey {
 
-    String[] indexes();
+    String[] value();
 
 }

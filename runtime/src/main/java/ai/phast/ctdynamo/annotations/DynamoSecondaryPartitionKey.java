@@ -9,6 +9,6 @@ import java.util.List;
 @Target({ElementType.FIELD, ElementType.METHOD}) @Retention(RetentionPolicy.SOURCE)
 public @interface DynamoSecondaryPartitionKey {
 
-    String[] indexes();
+    String[] value();
 
 }

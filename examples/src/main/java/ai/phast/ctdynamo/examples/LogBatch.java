@@ -4,6 +4,8 @@ import ai.phast.ctdynamo.annotations.DynamoAttribute;
 import ai.phast.ctdynamo.annotations.DynamoIgnore;
 import ai.phast.ctdynamo.annotations.DynamoItem;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
+import ai.phast.ctdynamo.annotations.DynamoSecondaryPartitionKey;
+import ai.phast.ctdynamo.annotations.DynamoSecondarySortKey;
 import ai.phast.ctdynamo.annotations.DynamoSortKey;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.EqualsAndHashCode;
@@ -69,6 +71,7 @@ public class LogBatch {
 
     /** The case id. */
     @DynamoAttribute(CASE_ID_ATTRIBUTE)
+    @DynamoSecondaryPartitionKey(CASE_ID_INDEX)
     private String caseId;
 
     /** The list of log entries. */
@@ -115,6 +118,7 @@ public class LogBatch {
      * @return the date of first message as a time instant.
      */
     @DynamoSortKey(value=DATE_OF_FIRST_MESSAGE_ATTRIBUTE, codec=InstantCodec.class)
+    @DynamoSecondarySortKey(CASE_ID_INDEX)
     public Instant getDateOfFirstMessage() {
         if (logEntries == null) {
             return null;

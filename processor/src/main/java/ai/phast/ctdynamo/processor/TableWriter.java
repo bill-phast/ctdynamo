@@ -1,6 +1,7 @@
 package ai.phast.ctdynamo.processor;
 
 import ai.phast.ctdynamo.DynamoCodec;
+import ai.phast.ctdynamo.DynamoIndex;
 import ai.phast.ctdynamo.DynamoTable;
 import ai.phast.ctdynamo.annotations.DefaultCodec;
 import ai.phast.ctdynamo.annotations.DynamoAttribute;
@@ -150,11 +151,16 @@ public class TableWriter {
                             .addMethod(buildDecoder(false))
                             .addMethod(buildGetExclusiveStart());
 
+        // Add our indexes
+        for (var indexName: indexes.keySet()) {
+            classBuilder.addType(buildIndexInnerClass(indexName));
+        }
+
         // Add the member variables for the codecs we need. This must be done after all methods are built, because building
         // methods may find more codecs we need.
         for (var codecEntry: codecClassToCodecVar.entrySet()) {
             var field = FieldSpec.builder(codecEntry.getKey(), codecEntry.getValue(),
-                Modifier.PRIVATE, Modifier.FINAL)
+                Modifier.PRIVATE, Modifier.FINAL, Modifier.STATIC)
                             .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
             classBuilder.addField(field.build());
         }
@@ -162,6 +168,35 @@ public class TableWriter {
         var qualifiedName = entryType.getQualifiedName().toString();
         var packageSplit = qualifiedName.lastIndexOf('.');
         return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classBuilder.build()).build();
+    }
+
+    private TypeSpec buildIndexInnerClass(String indexName) throws TableException {
+        var metadata = indexes.get(indexName);
+        if (metadata.getPartitonAttribute() == null) {
+            throw new TableException("Index " + indexName + " has no partition key");
+        }
+        if (metadata.getSortAttribute() == null) {
+            throw new TableException("Index " + indexName + " has no sort key");
+        }
+        var indexType = types.getDeclaredType(elements.getTypeElement(DynamoIndex.class.getCanonicalName()),
+            types.getDeclaredType(entryType), attributes.get(metadata.partitonAttribute).returnType,
+            attributes.get(metadata.sortAttribute).returnType);
+        var constructor = MethodSpec.constructorBuilder()
+                              .addParameter(DynamoDbClient.class, "client")
+                              .addParameter(DynamoDbAsyncClient.class, "asyncClient")
+                              .addParameter(String.class, "tableName")
+                              .addStatement("super(client, asyncClient, tableName, $S, $S, $S)",
+                                  indexName, metadata.partitonAttribute, metadata.sortAttribute)
+                              .build();
+        var classBuilder = TypeSpec.classBuilder(indexNameToClassName(indexName))
+                               .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+                               .superclass(ParameterizedTypeName.get(indexType))
+                               .addMethod(constructor)
+                               .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", metadata.partitonAttribute))
+                               .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", metadata.sortAttribute))
+                               .addMethod(buildDecoder(false))
+                               .addMethod(buildGetExclusiveStart());
+        return classBuilder.build();
     }
 
     public JavaFile buildCodecClass() throws TableException {
@@ -253,13 +288,13 @@ public class TableWriter {
         }
         var secondaryPartitionKeyAnnotation = declaringElement.getAnnotation(DynamoSecondaryPartitionKey.class);
         if (secondaryPartitionKeyAnnotation != null) {
-            for (var indexName : secondaryPartitionKeyAnnotation.indexes()) {
+            for (var indexName : secondaryPartitionKeyAnnotation.value()) {
                 indexes.computeIfAbsent(indexName, index -> new IndexMetadata()).setPartitonAttribute(attributeName);
             }
         }
         var secondarySortKeyAnnotation = declaringElement.getAnnotation(DynamoSecondarySortKey.class);
         if (secondarySortKeyAnnotation != null) {
-            for (var indexName: secondarySortKeyAnnotation.indexes()) {
+            for (var indexName: secondarySortKeyAnnotation.value()) {
                 indexes.computeIfAbsent(indexName, index -> new IndexMetadata()).setSortAttribute(attributeName);
             }
         }
@@ -267,7 +302,7 @@ public class TableWriter {
         if (codecName == null) {
             codecName = findCodecClass(attributeType);
         } else {
-            codecClassToCodecVar.computeIfAbsent(codecName, klass -> "codec" + ++paramNumber);
+            addCodec(codecName);
         }
         var prevMetadata = attributes.put(attributeName, new AttributeMetadata(getterName, attributeType, codecName));
         if (prevMetadata != null) {
@@ -609,11 +644,15 @@ public class TableWriter {
                 // class.
                 var baseClassName = (ClassName)TypeName.get(baseType);
                 var codecName = ClassName.get(baseClassName.packageName(), baseClassName.simpleName() + "DynamoCodec");
-                codecClassToCodecVar.computeIfAbsent(codecName, klass -> "codec" + ++paramNumber);
+                addCodec(codecName);
                 return codecName;
             }
         }
         return null;
+    }
+
+    private void addCodec(TypeName codecName) {
+        codecClassToCodecVar.computeIfAbsent(codecName, klass -> "CODEC_" + ++paramNumber);
     }
 
     private TypeMirror getCodecClass(Supplier<Class<?>> supplier) throws TableException {
