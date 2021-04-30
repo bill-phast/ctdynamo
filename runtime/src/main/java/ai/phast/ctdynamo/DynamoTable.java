@@ -185,6 +185,9 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().deleteItem(request)) : getAsyncClient().deleteItem(request);
     }
 
+    public abstract <SecondaryPartitionT, SecondarySortT> DynamoIndex<T, SecondaryPartitionT, SecondarySortT> getIndex(
+        String name, Class<SecondaryPartitionT> secondaryPartitionClass, Class<SecondarySortT> secondarySortClass);
+
     public abstract Map<String, AttributeValue> encode(T value);
 
     public abstract PartitionT getPartitionKey(T value);

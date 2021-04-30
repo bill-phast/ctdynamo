@@ -151,9 +151,19 @@ public class TableWriter {
                             .addMethod(buildDecoder(false))
                             .addMethod(buildGetExclusiveStart());
 
+        var qualifiedName = entryType.getQualifiedName().toString();
+        var packageSplit = qualifiedName.lastIndexOf('.');
+        var packageName = (packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "");
         // Add our indexes
         for (var indexName: indexes.keySet()) {
+            TypeName name = ClassName.get(packageName, entryType.getSimpleName() + "DynamoTable",
+                indexNameToClassName(indexName));
             classBuilder.addType(buildIndexInnerClass(indexName));
+            classBuilder.addMethod(MethodSpec.methodBuilder("get" + indexNameToClassName(indexName))
+                                       .addModifiers(Modifier.PUBLIC)
+                                       .returns(name)
+                                       .addStatement("return new $T(getClient(), getAsyncClient(), getTableName())", name)
+                                       .build());
         }
 
         // Add the member variables for the codecs we need. This must be done after all methods are built, because building
@@ -165,9 +175,7 @@ public class TableWriter {
             classBuilder.addField(field.build());
         }
 
-        var qualifiedName = entryType.getQualifiedName().toString();
-        var packageSplit = qualifiedName.lastIndexOf('.');
-        return JavaFile.builder(packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "", classBuilder.build()).build();
+        return JavaFile.builder(packageName, classBuilder.build()).build();
     }
 
     private TypeSpec buildIndexInnerClass(String indexName) throws TableException {
