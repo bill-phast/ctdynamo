@@ -4,7 +4,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -21,7 +20,14 @@ public class QueryResult<T> implements Iterable<T> {
 
     private final int limit;
 
-    private int totalConsumed = 0;
+    /** Count of how many items we have consumed; that is, put into our iterators */
+    private int totalConsumed;
+
+    /** Count of all items returned by all queries. Includes the items that we threw away if the last request had too many */
+    private int itemsReturned;
+
+    /** Count of all items scanned by all queries */
+    private int itemsScanned;
 
     private Iterator<Map<String, AttributeValue>> responseIterator = null;
 
@@ -56,6 +62,15 @@ public class QueryResult<T> implements Iterable<T> {
 
             // Now we have released our lock so we can join with our worker thread.
             var response = futureResponse.join();
+
+            // Update counters with data from the new request
+            if (response.count() != null) {
+                itemsReturned += response.count();
+            }
+            if (response.scannedCount() != null) {
+                itemsScanned += response.scannedCount();
+            }
+
             futureResponse = null;
             var nextQueryStart = response.lastEvaluatedKey();
             var lastItemSeen = nextQueryStart;
@@ -105,12 +120,20 @@ public class QueryResult<T> implements Iterable<T> {
         };
     }
 
-    private Map<String, AttributeValue> getExclusiveStart() {
+    public Map<String, AttributeValue> getExclusiveStart() {
         if ((futureResponse != null) || (responseIterator != null)) {
             // Not allowed to ask for the exclusive start until we have reached the end
             throw new IllegalStateException();
         }
         return exclusiveStart;
+    }
+
+    public int getItemsReturned() {
+        return itemsReturned;
+    }
+
+    public int getItemsScanned() {
+        return itemsScanned;
     }
 
     public Stream<T> stream() {

@@ -7,6 +7,8 @@ import ai.phast.ctdynamo.annotations.DynamoAttribute;
 import ai.phast.ctdynamo.annotations.DynamoIgnore;
 import ai.phast.ctdynamo.annotations.DynamoItem;
 import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
+import ai.phast.ctdynamo.annotations.DynamoSecondaryPartitionKey;
+import ai.phast.ctdynamo.annotations.DynamoSecondarySortKey;
 import ai.phast.ctdynamo.annotations.DynamoSortKey;
 import com.squareup.javapoet.ClassName;
 import com.squareup.javapoet.CodeBlock;
@@ -38,7 +40,6 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
-import javax.lang.model.type.PrimitiveType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
@@ -85,9 +86,11 @@ public class TableWriter {
 
     private final Map<String, AttributeMetadata> attributes = new HashMap<>();
 
-    private Set<String> ignoredAttributes = new HashSet<>();
+    private final Set<String> ignoredAttributes = new HashSet<>();
 
     private final Map<TypeName, String> codecClassToCodecVar = new HashMap<>();
+
+    private final Map<String, IndexMetadata> indexes = new HashMap<>();
 
     private final boolean ignoreNulls;
 
@@ -191,8 +194,10 @@ public class TableWriter {
             return;
         }
         if (element.getAnnotation(DynamoAttribute.class) != null
-            || element.getAnnotation(DynamoPartitionKey.class) != null
-            || element.getAnnotation(DynamoSortKey.class) != null) {
+                || element.getAnnotation(DynamoPartitionKey.class) != null
+                || element.getAnnotation(DynamoSortKey.class) != null
+                || element.getAnnotation(DynamoSecondaryPartitionKey.class) != null
+                || element.getAnnotation(DynamoSecondarySortKey.class) != null) {
             processAttribute(element, "get" + upcaseFirst(attributeName), attributeName, element.asType());
         }
     }
@@ -245,6 +250,18 @@ public class TableWriter {
             }
             sortKeyAttribute = getAttributeName(sortKeyAnnotation.value(), getterName);
             codecType = getCodecClass(sortKeyAnnotation::codec);
+        }
+        var secondaryPartitionKeyAnnotation = declaringElement.getAnnotation(DynamoSecondaryPartitionKey.class);
+        if (secondaryPartitionKeyAnnotation != null) {
+            for (var indexName : secondaryPartitionKeyAnnotation.indexes()) {
+                indexes.computeIfAbsent(indexName, index -> new IndexMetadata()).setPartitonAttribute(attributeName);
+            }
+        }
+        var secondarySortKeyAnnotation = declaringElement.getAnnotation(DynamoSecondarySortKey.class);
+        if (secondarySortKeyAnnotation != null) {
+            for (var indexName: secondarySortKeyAnnotation.indexes()) {
+                indexes.computeIfAbsent(indexName, index -> new IndexMetadata()).setSortAttribute(attributeName);
+            }
         }
         var codecName = (codecType == null || defaultCodecMirror.equals(codecType) ? null : TypeName.get(codecType));
         if (codecName == null) {
@@ -608,6 +625,33 @@ public class TableWriter {
             setterName = "set" + getterName.substring(3);
             this.returnType = returnType;
             this.codecClass = codecClass;
+        }
+    }
+
+    private static class IndexMetadata {
+        private String partitonAttribute;
+        private String sortAttribute;
+
+        public void setPartitonAttribute(String value) throws TableException {
+            if ((partitonAttribute != null) && !partitonAttribute.equals(value)) {
+                throw new TableException("Secondary partition attribute set twice: " + partitonAttribute + " and " + value);
+            }
+            partitonAttribute = value;
+        }
+
+        public String getPartitonAttribute() {
+            return partitonAttribute;
+        }
+
+        public void setSortAttribute(String value) throws TableException {
+            if ((sortAttribute != null) && !sortAttribute.equals(value)) {
+                throw new TableException(("Secondary sort attribute set twice: " + partitonAttribute + " and " + value);
+            }
+            sortAttribute = value;
+        }
+
+        public String getSortAttribute() {
+            return sortAttribute;
         }
     }
 }
