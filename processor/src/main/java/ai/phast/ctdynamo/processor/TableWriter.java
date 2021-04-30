@@ -382,7 +382,9 @@ public class TableWriter {
                         .addNamedCode("map.put($" + attrNameParam + ":S, " + buildAttributeEncodeExpression(attributeName, varName, formatParams) + ");\n", formatParams)
                         .endControlFlow();
                 } else {
-                    builder.addNamedCode("map.put($" + attrNameParam + ":S, " + varName + " == null ? NULL_ATTRIBUTE_VALUE : "
+                    var codecClassParam = "t" + ++paramNumber;
+                    formatParams.put(codecClassParam, DynamoCodec.class);
+                    builder.addNamedCode("map.put($" + attrNameParam + ":S, " + varName + " == null ? $" + codecClassParam + ":T.NULL_ATTRIBUTE_VALUE : "
                                              + buildAttributeEncodeExpression(attributeName, varName, formatParams) + ");\n", formatParams);
                 }
             }

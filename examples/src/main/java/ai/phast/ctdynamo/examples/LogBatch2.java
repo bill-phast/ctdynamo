@@ -7,7 +7,7 @@ import ai.phast.ctdynamo.annotations.DynamoPartitionKey;
 import java.time.Instant;
 import java.util.List;
 
-@DynamoItem({DynamoItem.Output.TABLE, DynamoItem.Output.CODEC})
+@DynamoItem(value = {DynamoItem.Output.TABLE, DynamoItem.Output.CODEC}, ignoreNulls = false)
 public class LogBatch2 {
 
     private String id;
