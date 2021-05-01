@@ -3,20 +3,30 @@ package ai.phast.ctdynamo;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.BatchGetItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.BatchGetItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.ConsumedCapacity;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.KeysAndAttributes;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BiFunction;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, PartitionT, SortT> {
+
+    private static final int MAX_ITEMS_PER_BATCH = 25;
 
     public DynamoTable(DynamoDbClient client, DynamoDbAsyncClient asyncClient, String tableName,
                        String partitionKeyAttribute, String sortKeyAttribute) {
@@ -86,95 +96,158 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                : getAsyncClient().getItem(request);
     }
 
-    public void put(T value) {
-        var request = PutItemRequest.builder()
-            .tableName(getTableName())
-            .item(encode(value))
-            .build();
-        if (getClient() == null) {
-            getAsyncClient().putItem(request).join();
-        } else {
-            getClient().putItem(request);
+    private List<T> getBatch(List<T> keys) {
+        return getBatch(keys.stream().map(this::getPartitionKey).collect(Collectors.toList()),
+            keys.stream().map(this::getSortKey).collect(Collectors.toList()));
+    }
+
+    private List<T> getBatch(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
+        int numItems = partitionKeys.size();
+        if (numItems != sortKeys.size()) {
+            throw new IllegalArgumentException("Got " + numItems + " partition keys, and "
+                                                   + sortKeys.size() + " sort keys. They must be equal");
         }
+        var result = new ArrayList<T>(numItems);
+        for (int i = 0; i < numItems; i += MAX_ITEMS_PER_BATCH) {
+            var request = BatchGetItemRequest.builder().requestItems(buildBatchItems(partitionKeys, sortKeys, i)).build();
+            var response = getClient() == null ? getAsyncClient().batchGetItem(request).join()
+                                               : getClient().batchGetItem(request);
+            response.responses().get(getTableName()).stream()
+                .map(this::decode)
+                .forEach(result::add);
+        }
+        return result;
     }
 
-    public ConsumedCapacity putExtended(T value) {
-        var request = PutItemRequest.builder()
+    private List<T> getBatchAsync(List<T> keys) {
+        return getBatch(keys.stream().map(this::getPartitionKey).collect(Collectors.toList()),
+            keys.stream().map(this::getSortKey).collect(Collectors.toList()));
+    }
+
+    private CompletableFuture<List<T>> getBatchAsync(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
+        int numItems = partitionKeys.size();
+        if (numItems != sortKeys.size()) {
+            throw new IllegalArgumentException("Got " + numItems + " partition keys, and "
+                                                   + sortKeys.size() + " sort keys. They must be equal");
+        }
+        BiFunction<List<T>, BatchGetItemResponse, List<T>> merger = (list, response) -> {
+            if (response.hasResponses()) {
+                response.responses().get(getTableName()).forEach(m -> list.add(decode(m)));
+            }
+            return list;
+        };
+        CompletableFuture<List<T>> result = CompletableFuture.completedFuture(new ArrayList<>(numItems));
+        for (int i = 0; i < numItems; i += MAX_ITEMS_PER_BATCH) {
+            var request = BatchGetItemRequest.builder().requestItems(buildBatchItems(partitionKeys, sortKeys, i)).build();
+            result = result.thenCombine(
+                getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().batchGetItem(request))
+                                         : getAsyncClient().batchGetItem(request),
+                merger);
+        }
+        return result;
+    }
+
+    /**
+     * Build a map from table name to a list of keys. The result will take all items until either the end of the list or\
+     * MAX_ITEMS_PER_BATCH has been reached. This is useful for many batch requests.
+     * @param partitionKeys A list of partition keys
+     * @param sortKeys A list of sort keys
+     * @param offset Where in each list to start
+     * @return A data structure that will hold as many key items as possible from the list
+     */
+    private Map<String, KeysAndAttributes> buildBatchItems(List<PartitionT> partitionKeys, List<SortT> sortKeys, int offset) {
+        return Collections.singletonMap(getTableName(),
+            KeysAndAttributes.builder()
+                .keys(IntStream.range(offset, Math.min(partitionKeys.size(), offset + MAX_ITEMS_PER_BATCH) - 1)
+                          .mapToObj(i -> keysToMap(partitionKeys.get(i), sortKeys.get(i)))
+                          .collect(Collectors.toList()))
+                .build());
+    }
+
+    public ExtendedItemResult<T> putExtended(T value) {
+        var putResponse = put(PutItemRequest.builder()
                           .tableName(getTableName())
                           .item(encode(value))
                           .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
-                          .build();
-        return (getClient() == null
-                ? getAsyncClient().putItem(request).join()
-                : getClient().putItem(request)).consumedCapacity();
+                          .build());
+        return new ExtendedItemResult<>(putResponse.hasAttributes() ? decode(putResponse.attributes()) : null, putResponse.consumedCapacity());
     }
 
-    public CompletableFuture<Void> putAsync(T value) {
-        var request = PutItemRequest.builder()
-                          .tableName(getTableName())
-                          .item(encode(value))
-                          .build();
-        return (getAsyncClient() == null
-                ? CompletableFuture.runAsync(() -> getClient().putItem(request))
-                : getAsyncClient().putItem(request).thenApply(r -> null));
+    public CompletableFuture<T> putAsync(T value) {
+        return putAsync(PutItemRequest.builder()
+                            .tableName(getTableName())
+                            .item(encode(value))
+                            .build())
+                   .thenApply(resp -> resp.hasAttributes() ? decode(resp.attributes()) : null);
     }
 
-    public CompletableFuture<ConsumedCapacity> putExtendedAsync(T value) {
-        var request = PutItemRequest.builder()
-                          .tableName(getTableName())
-                          .item(encode(value))
-                          .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
-                          .build();
-        return (getAsyncClient() == null
-                ? CompletableFuture.supplyAsync(() -> getClient().putItem(request))
-                : getAsyncClient().putItem(request)).thenApply(PutItemResponse::consumedCapacity);
+    public CompletableFuture<ExtendedItemResult<T>> putExtendedAsync(T value) {
+        return putAsync(PutItemRequest.builder()
+                            .tableName(getTableName())
+                            .item(encode(value))
+                            .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
+                            .build())
+                   .thenApply(resp -> new ExtendedItemResult<>(
+                       resp.hasAttributes() ? decode(resp.attributes()) : null, resp.consumedCapacity()));
     }
 
-    public final void delete(T value) {
-        delete(getPartitionKey(value), getSortKey(value));
+    private PutItemResponse put(PutItemRequest request) {
+        return getClient() == null ? getAsyncClient().putItem(request).join() : getClient().putItem(request);
     }
 
-    public void delete(PartitionT partitionKey, SortT sortKey) {
-        delete(DeleteItemRequest.builder()
+    private CompletableFuture<PutItemResponse> putAsync(PutItemRequest request) {
+        return getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().putItem(request)) : getAsyncClient().putItem(request);
+    }
+
+    public final T delete(T value) {
+        return delete(getPartitionKey(value), getSortKey(value));
+    }
+
+    public T delete(PartitionT partitionKey, SortT sortKey) {
+        var deleteResponse = delete(DeleteItemRequest.builder()
                    .tableName(getTableName())
                    .key(keysToMap(partitionKey, sortKey))
                    .build());
+        return deleteResponse.hasAttributes() ? decode(deleteResponse.attributes()) : null;
     }
 
-    public final ConsumedCapacity deleteExtended(T value) {
+    public final ExtendedItemResult<T> deleteExtended(T value) {
         return deleteExtended(getPartitionKey(value), getSortKey(value));
     }
 
-    public ConsumedCapacity deleteExtended(PartitionT partitionKey, SortT sortKey) {
-        return delete(DeleteItemRequest.builder()
-                          .tableName(getTableName())
-                          .key(keysToMap(partitionKey, sortKey))
-                          .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
-                          .build()).consumedCapacity();
+    public ExtendedItemResult<T> deleteExtended(PartitionT partitionKey, SortT sortKey) {
+        var deleteResponse = delete(DeleteItemRequest.builder()
+                                        .tableName(getTableName())
+                                        .key(keysToMap(partitionKey, sortKey))
+                                        .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
+                                        .build());
+        return new ExtendedItemResult<>(deleteResponse.hasAttributes() ? decode(deleteResponse.attributes()) : null, deleteResponse.consumedCapacity());
     }
     
-    public final CompletableFuture<Void> deleteAsync(T value) {
+    public final CompletableFuture<T> deleteAsync(T value) {
         return deleteAsync(getPartitionKey(value), getSortKey(value));
     }
 
-    public CompletableFuture<Void> deleteAsync(PartitionT partitionKey, SortT sortKey) {
+    public CompletableFuture<T> deleteAsync(PartitionT partitionKey, SortT sortKey) {
         return deleteAsync(DeleteItemRequest.builder()
-                          .tableName(getTableName())
-                          .key(keysToMap(partitionKey, sortKey))
-                          .build()).thenApply(r -> null);
+                               .tableName(getTableName())
+                               .key(keysToMap(partitionKey, sortKey))
+                               .build())
+                   .thenApply(resp -> resp.hasAttributes() ? decode(resp.attributes()) : null);
     }
 
-    public final CompletableFuture<ConsumedCapacity> deleteExtendedAsync(T value) {
+    public final CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(T value) {
         return deleteExtendedAsync(getPartitionKey(value), getSortKey(value));
     }
 
-    public CompletableFuture<ConsumedCapacity> deleteExtendedAsync(PartitionT partitionKey, SortT sortKey) {
+    public CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(PartitionT partitionKey, SortT sortKey) {
         return deleteAsync(DeleteItemRequest.builder()
                                .tableName(getTableName())
                                .key(keysToMap(partitionKey, sortKey))
                                .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
                                .build())
-                   .thenApply(DeleteItemResponse::consumedCapacity);
+                   .thenApply(resp -> new ExtendedItemResult<>(
+                       resp.hasAttributes() ? decode(resp.attributes()) : null, resp.consumedCapacity()));
     }
 
     private DeleteItemResponse delete(DeleteItemRequest request) {
