@@ -19,6 +19,8 @@ import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
+import com.squareup.javapoet.TypeVariableName;
+import com.squareup.javapoet.WildcardTypeName;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -138,24 +140,25 @@ public class TableWriter {
             ? types.getDeclaredType(elements.getTypeElement(Void.class.getCanonicalName()))
             : attributes.get(sortKeyAttribute).returnType);
         var classBuilder = TypeSpec.classBuilder(entryType.getSimpleName() + "DynamoTable")
-                            .addModifiers(Modifier.PUBLIC)
-                            .superclass(ParameterizedTypeName.get(tableType));
+                               .addModifiers(Modifier.PUBLIC)
+                               .superclass(ParameterizedTypeName.get(tableType));
         classBuilder.addMethod(buildTableConstructor(true, true))
-                            .addMethod(buildTableConstructor(true, false))
-                            .addMethod(buildTableConstructor(false, true))
-                            .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
-                            .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
-                            .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", partitionKeyAttribute))
-                            .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", sortKeyAttribute))
-                            .addMethod(buildEncoder(false))
-                            .addMethod(buildDecoder(false))
-                            .addMethod(buildGetExclusiveStart());
+            .addMethod(buildTableConstructor(true, false))
+            .addMethod(buildTableConstructor(false, true))
+            .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
+            .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
+            .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", partitionKeyAttribute))
+            .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", sortKeyAttribute))
+            .addMethod(buildEncoder(false))
+            .addMethod(buildDecoder(false))
+            .addMethod(buildGetExclusiveStart())
+            .addMethod(buildGetIndex());
 
         var qualifiedName = entryType.getQualifiedName().toString();
         var packageSplit = qualifiedName.lastIndexOf('.');
         var packageName = (packageSplit > 0 ? qualifiedName.substring(0, packageSplit) : "");
         // Add our indexes
-        for (var indexName: indexes.keySet()) {
+        for (var indexName : indexes.keySet()) {
             TypeName name = ClassName.get(packageName, entryType.getSimpleName() + "DynamoTable",
                 indexNameToClassName(indexName));
             classBuilder.addType(buildIndexInnerClass(indexName));
@@ -168,7 +171,7 @@ public class TableWriter {
 
         // Add the member variables for the codecs we need. This must be done after all methods are built, because building
         // methods may find more codecs we need.
-        for (var codecEntry: codecClassToCodecVar.entrySet()) {
+        for (var codecEntry : codecClassToCodecVar.entrySet()) {
             var field = FieldSpec.builder(codecEntry.getKey(), codecEntry.getValue(),
                 Modifier.PRIVATE, Modifier.FINAL, Modifier.STATIC)
                             .initializer(CodeBlock.builder().add("new $T()", codecEntry.getKey()).build());
@@ -506,6 +509,61 @@ public class TableWriter {
             builder.addNamedCode(template.append(");\n").toString(), formatParams);
         }
         return builder.build();
+    }
+
+    private MethodSpec buildGetIndex() {
+        var partitionT = TypeVariableName.get("IndexPartitionT");
+        var sortT = TypeVariableName.get("IndexSortT");
+        var builder = MethodSpec.methodBuilder("getIndex")
+                          .addModifiers(Modifier.PUBLIC)
+                          .addAnnotation(Override.class)
+                          .addTypeVariable(partitionT)
+                          .addTypeVariable(sortT)
+                          .returns(ParameterizedTypeName.get(ClassName.get(DynamoIndex.class), TypeName.get(entryType.asType()), partitionT, sortT))
+                          .addParameter(String.class, "name")
+                          .addParameter(ParameterizedTypeName.get(ClassName.get(Class.class), partitionT), "partitionClass")
+                          .addParameter(ParameterizedTypeName.get(ClassName.get(Class.class), sortT), "sortClass");
+        switch (indexes.size()) {
+            case 0:
+                return builder.addStatement("throw new $T($S)", UnsupportedOperationException.class,
+                    "Class " + entryType.getSimpleName() + " has no secondary indexes. Maybe you are missing @"
+                        + DynamoSecondaryPartitionKey.class.getSimpleName() + " annotations").build();
+            case 1:
+                var entry = indexes.entrySet().iterator().next();
+                return builder.beginControlFlow("if (name.equals($S))", entry.getKey())
+                           .addStatement("if ((partitionClass == $T.class) && (sortClass == $T.class))",
+                               attributes.get(entry.getValue().getPartitonAttribute()).returnType,
+                               attributes.get(entry.getValue().getSortAttribute()).returnType)
+                           .addStatement("return (DynamoIndex<$T, IndexPartitionT, IndexSortT>)" + "get" + upcaseFirst(entry.getKey()) + "Index()", entryType)
+                           .nextControlFlow("else")
+                           .addStatement("throw new $T($S + name)", IllegalArgumentException.class, "Unknown index: ")
+                           .endControlFlow()
+                           .build();
+            default:
+                builder.addStatement("$T expectedPartitionClass", ParameterizedTypeName.get(ClassName.get(Class.class), WildcardTypeName.subtypeOf(Object.class)))
+                    .addStatement("$T expectedSortClass", ParameterizedTypeName.get(ClassName.get(Class.class), WildcardTypeName.subtypeOf(Object.class)))
+                    .addStatement("$T index", ParameterizedTypeName.get(ClassName.get(DynamoIndex.class),
+                        WildcardTypeName.subtypeOf(Object.class), WildcardTypeName.subtypeOf(Object.class)))
+                    .beginControlFlow("switch(name)");
+                for (var indexName : indexes.keySet()) {
+                    var metadata = indexes.get(indexName);
+                    builder.addCode("case($S):\n", indexName)
+                        .addStatement("$>expectedPartitionClass = $T.class", indexName, attributes.get(metadata.partitonAttribute).returnType)
+                        .addStatement("expectedSortClass = $T.class", attributes.get(metadata.sortAttribute).returnType)
+                        .addStatement("index = " + "get" + upcaseFirst(indexName) + "()")
+                        .addStatement("break");
+                }
+                builder.addCode("default:\n")
+                    .addStatement("throw new $T($S + name)", IllegalArgumentException.class,
+                        "Unknown index name: ");
+                builder.endControlFlow();
+                builder.beginControlFlow("if ((expectedPartitionClass != partitionClass) || (expectedSortClass != sortClass))")
+                    .addStatement("throw new $T($S + name + $S + expectedPartitionClass.getSimpleName() + $S + expectedSortClass.getSimpleName() + $S + partitionClass.getSimpleName() + $S + sortClass.getSimpleName())",
+                        IllegalArgumentException.class, "Incorrect key types for index ", ", expected: ", " and ", ", got: ", " and ")
+                    .endControlFlow();
+                builder.addStatement("return null");
+                return builder.build();
+        }
     }
 
     /**
