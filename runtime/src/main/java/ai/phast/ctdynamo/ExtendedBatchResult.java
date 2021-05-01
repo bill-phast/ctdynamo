@@ -1,7 +1,5 @@
 package ai.phast.ctdynamo;
 
-import software.amazon.awssdk.services.dynamodb.model.ConsumedCapacity;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,23 +31,4 @@ public class ExtendedBatchResult<T, PartitionT, SortT> {
         return capacity;
     }
 
-    public static class Key<PartitionT, SortT> {
-
-        private final PartitionT partition;
-
-        private final SortT sort;
-
-        Key(PartitionT partition, SortT sort) {
-            this.partition = partition;
-            this.sort = sort;
-        }
-
-        public PartitionT getPartition() {
-            return partition;
-        }
-
-        public SortT getSort() {
-            return sort;
-        }
-    }
 }

@@ -22,7 +22,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, PartitionT, SortT> {
 
@@ -35,6 +34,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
 
     public final T get(T value) {
         return get(getPartitionKey(value), getSortKey(value));
+    }
+
+    public final T get(Key<PartitionT, SortT> key) {
+        return get(key.getPartition(), key.getSort());
     }
 
     public T get(PartitionT partitionValue, SortT sortValue) {
@@ -96,15 +99,25 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                : getAsyncClient().getItem(request);
     }
 
-    public List<T> getBatch(List<T> keys) {
-        return getBatchesAndMerge(buildBatches(keys));
+    /**
+     * Get a batch of items. This can't be named "getBatch" because erasure makes it the same as the by-key version.
+     * @param items The items whose keys will be used to get the batch
+     * @return The result of the read
+     */
+    public List<T> getBatchByItem(List<T> items) {
+        return getBatch(buildBatchesFromItems(items));
     }
 
-    public List<T> getBatch(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
-        return getBatchesAndMerge(buildBatches(partitionKeys, sortKeys));
+    /**
+     * Get a batch of items. This can't be named "getBatch" because erasure makes it the same as the by-item version.
+     * @param keys The keys used to get the batch
+     * @return The result of the read
+     */
+    public List<T> getBatchByKey(List<Key<PartitionT, SortT>> keys) {
+        return getBatch(buildBatchesFromKeys(keys));
     }
 
-    private List<T> getBatchesAndMerge(List<Map<String, KeysAndAttributes>> batches) {
+    private List<T> getBatch(List<Map<String, KeysAndAttributes>> batches) {
         Function<BatchGetItemRequest, BatchGetItemResponse> doCall = (getClient() == null
                                                                       ? req -> getAsyncClient().batchGetItem(req).join()
                                                                       : req -> getClient().batchGetItem(req));
@@ -117,15 +130,15 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                    .collect(Collectors.toList());
     }
 
-    public ExtendedBatchResult<T, PartitionT, SortT> getExtendedBatches(List<T> items) {
-        return getExtendedBatchesAndMerge(buildBatches(items));
+    public ExtendedBatchResult<T, PartitionT, SortT> getBatchByItemExtended(List<T> items) {
+        return getBatchExtended(buildBatchesFromItems(items));
     }
 
-    public ExtendedBatchResult<T, PartitionT, SortT> getExtendedBatches(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
-        return getExtendedBatchesAndMerge(buildBatches(partitionKeys, sortKeys));
+    public ExtendedBatchResult<T, PartitionT, SortT> getBatchesByKeyExtended(List<Key<PartitionT, SortT>> keys) {
+        return getBatchExtended(buildBatchesFromKeys(keys));
     }
 
-    public ExtendedBatchResult<T, PartitionT, SortT> getExtendedBatchesAndMerge(List<Map<String, KeysAndAttributes>> batches) {
+    private ExtendedBatchResult<T, PartitionT, SortT> getBatchExtended(List<Map<String, KeysAndAttributes>> batches) {
         var result = new ExtendedBatchResult<T, PartitionT, SortT>();
         for (var batch : batches) {
             var request = BatchGetItemRequest.builder()
@@ -138,15 +151,15 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    public CompletableFuture<List<T>> getBatchAsync(List<T> keys) {
-        return getBatchesAndMergeAsync(buildBatches(keys));
+    public CompletableFuture<List<T>> getBatchByItemAsync(List<T> items) {
+        return getBatchAsync(buildBatchesFromItems(items));
     }
 
-    public CompletableFuture<List<T>> getBatchAsync(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
-        return getBatchesAndMergeAsync(buildBatches(partitionKeys, sortKeys));
+    public CompletableFuture<List<T>> getBatchByKeyAsync(List<Key<PartitionT, SortT>> keys) {
+        return getBatchAsync(buildBatchesFromKeys(keys));
     }
 
-    private CompletableFuture<List<T>> getBatchesAndMergeAsync(List<Map<String, KeysAndAttributes>> batches) {
+    private CompletableFuture<List<T>> getBatchAsync(List<Map<String, KeysAndAttributes>> batches) {
         BiFunction<List<T>, BatchGetItemResponse, List<T>> merger = (list, response) -> {
             if (response.hasResponses()) {
                 response.responses().get(getTableName()).forEach(m -> list.add(decode(m)));
@@ -164,15 +177,15 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getExtendedBatchesAsync(List<T> items) {
-        return getExtendedBatchesAndMergeAsync(buildBatches(items));
+    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchByItemExtendedAsync(List<T> items) {
+        return getBatchExtendedAsync(buildBatchesFromItems(items));
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getExtendedBatchesAsync(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
-        return getExtendedBatchesAndMergeAsync(buildBatches(partitionKeys, sortKeys));
+    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchesByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
+        return getBatchExtendedAsync(buildBatchesFromKeys(keys));
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getExtendedBatchesAndMergeAsync(List<Map<String, KeysAndAttributes>> batches) {
+    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchExtendedAsync(List<Map<String, KeysAndAttributes>> batches) {
         var result = CompletableFuture.completedFuture(new ExtendedBatchResult<T, PartitionT, SortT>());
         for (var batch : batches) {
             var request = BatchGetItemRequest.builder()
@@ -200,33 +213,9 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         }
         if (response.hasUnprocessedKeys()) {
             for (var keyMap : response.unprocessedKeys().get(getTableName()).keys()) {
-                result.getUnprocessedKeys().add(new ExtendedBatchResult.Key<>(getPartitionKey(keyMap.get(getPartitionKeyAttribute())),
+                result.getUnprocessedKeys().add(new Key<>(getPartitionKey(keyMap.get(getPartitionKeyAttribute())),
                     getSortKey(keyMap.get(getSortKeyAttribute()))));
             }
-        }
-        return result;
-    }
-
-    /**
-     * Build a list of maps from table name to a list of keys. Each map will have at most MAX_ITEMS_PER_BATCH items.
-     * @param partitionKeys A list of partition keys
-     * @param sortKeys A list of sort keys
-     * @return A list of batches to submit for processing
-     */
-    private List<Map<String, KeysAndAttributes>> buildBatches(List<PartitionT> partitionKeys, List<SortT> sortKeys) {
-        int numItems = partitionKeys.size();
-        if (numItems != sortKeys.size()) {
-            throw new IllegalArgumentException("Got " + numItems + " partition keys, and "
-                                                   + sortKeys.size() + " sort keys. They must be equal");
-        }
-        var result = new ArrayList<Map<String, KeysAndAttributes>>();
-        for (int offset = 0; offset < numItems; offset += MAX_ITEMS_PER_BATCH) {
-            result.add(Collections.singletonMap(getTableName(),
-                KeysAndAttributes.builder()
-                    .keys(IntStream.range(offset, Math.min(numItems, offset + MAX_ITEMS_PER_BATCH) - 1)
-                              .mapToObj(i -> keysToMap(partitionKeys.get(i), sortKeys.get(i)))
-                              .collect(Collectors.toList()))
-                    .build()));
         }
         return result;
     }
@@ -270,6 +259,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return delete(getPartitionKey(value), getSortKey(value));
     }
 
+    public final T delete(Key<PartitionT, SortT> key) {
+        return delete(key.getPartition(), key.getSort());
+    }
+
     public T delete(PartitionT partitionKey, SortT sortKey) {
         var deleteResponse = delete(DeleteItemRequest.builder()
                    .tableName(getTableName())
@@ -280,6 +273,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
 
     public final ExtendedItemResult<T> deleteExtended(T value) {
         return deleteExtended(getPartitionKey(value), getSortKey(value));
+    }
+
+    public final ExtendedItemResult<T> deleteExtended(Key<PartitionT, SortT> value) {
+        return deleteExtended(value.getPartition(), value.getSort());
     }
 
     public ExtendedItemResult<T> deleteExtended(PartitionT partitionKey, SortT sortKey) {
@@ -295,6 +292,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return deleteAsync(getPartitionKey(value), getSortKey(value));
     }
 
+    public final CompletableFuture<T> deleteAsync(Key<PartitionT, SortT> key) {
+        return deleteAsync(key.getPartition(), key.getSort());
+    }
+
     public CompletableFuture<T> deleteAsync(PartitionT partitionKey, SortT sortKey) {
         return deleteAsync(DeleteItemRequest.builder()
                                .tableName(getTableName())
@@ -305,6 +306,10 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
 
     public final CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(T value) {
         return deleteExtendedAsync(getPartitionKey(value), getSortKey(value));
+    }
+
+    public final CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(Key<PartitionT, SortT> key) {
+        return deleteExtendedAsync(key.getPartition(), key.getSort());
     }
 
     public CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(PartitionT partitionKey, SortT sortKey) {
@@ -333,14 +338,33 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
      * @param items A list of items to use as sort keys
      * @return A list of batches to submit for processing
      */
-    private List<Map<String, KeysAndAttributes>> buildBatches(List<T> items) {
+    private List<Map<String, KeysAndAttributes>> buildBatchesFromItems(List<T> items) {
         int numItems = items.size();
-        var result = new ArrayList<Map<String, KeysAndAttributes>>();
+        var result = new ArrayList<Map<String, KeysAndAttributes>>((numItems + MAX_ITEMS_PER_BATCH - 1) / MAX_ITEMS_PER_BATCH);
         for (int offset = 0; offset < numItems; offset += MAX_ITEMS_PER_BATCH) {
             result.add(Collections.singletonMap(getTableName(),
                 KeysAndAttributes.builder()
                     .keys(items.subList(offset, Math.min(numItems, offset + MAX_ITEMS_PER_BATCH)).stream()
                               .map(item -> keysToMap(getPartitionKey(item), getSortKey(item)))
+                              .collect(Collectors.toList()))
+                    .build()));
+        }
+        return result;
+    }
+
+    /**
+     * Build a list of maps from table name to a list of keys. Each map will have at most MAX_ITEMS_PER_BATCH items.
+     * @param keys A list of keys
+     * @return A list of batches to submit for processing
+     */
+    private List<Map<String, KeysAndAttributes>> buildBatchesFromKeys(List<Key<PartitionT, SortT>> keys) {
+        int numItems = keys.size();
+        var result = new ArrayList<Map<String, KeysAndAttributes>>((numItems + MAX_ITEMS_PER_BATCH - 1) / MAX_ITEMS_PER_BATCH);
+        for (int offset = 0; offset < numItems; offset += MAX_ITEMS_PER_BATCH) {
+            result.add(Collections.singletonMap(getTableName(),
+                KeysAndAttributes.builder()
+                    .keys(keys.subList(offset, Math.min(numItems, offset + MAX_ITEMS_PER_BATCH)).stream()
+                              .map(key -> keysToMap(key.getPartition(), key.getSort()))
                               .collect(Collectors.toList()))
                     .build()));
         }

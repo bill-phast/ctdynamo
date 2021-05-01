@@ -62,6 +62,10 @@ public abstract class DynamoIndex<T, PartitionT, SortT> {
         return sortKeyAttribute;
     }
 
+    public final Query<T, PartitionT, SortT> query() {
+        return query(null);
+    }
+
     public Query<T, PartitionT, SortT> query(PartitionT partitionValue) {
         return new Query<>(this, partitionValue);
     }
