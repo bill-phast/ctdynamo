@@ -145,8 +145,10 @@ public class TableWriter {
         classBuilder.addMethod(buildTableConstructor(true, true))
             .addMethod(buildTableConstructor(true, false))
             .addMethod(buildTableConstructor(false, true))
-            .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute))
-            .addMethod(buildGetKey("getSortKey", sortKeyAttribute))
+            .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute, true))
+            .addMethod(buildGetKey("getSortKey", sortKeyAttribute, true))
+            .addMethod(buildGetKey("getPartitionKey", partitionKeyAttribute, false))
+            .addMethod(buildGetKey("getSortKey", sortKeyAttribute, false))
             .addMethod(buildKeyToAttributeValue("partitionValueToAttributeValue", partitionKeyAttribute))
             .addMethod(buildKeyToAttributeValue("sortValueToAttributeValue", sortKeyAttribute))
             .addMethod(buildEncoder(false))
@@ -347,11 +349,15 @@ public class TableWriter {
         return builder.build();
     }
 
-    private MethodSpec buildGetKey(String getKeyName, String attributeName) {
+    private MethodSpec buildGetKey(String getKeyName, String attributeName, boolean fromItem) throws TableException {
         var methodBuilder = MethodSpec.methodBuilder(getKeyName)
                                 .addAnnotation(Override.class)
-                                .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
-                                .addParameter(TypeName.get(types.getDeclaredType(entryType)), "value");
+                                .addModifiers(fromItem ? Modifier.PUBLIC : Modifier.PROTECTED, Modifier.FINAL);
+        if (fromItem) {
+            methodBuilder.addParameter(TypeName.get(types.getDeclaredType(entryType)), "value");
+        } else {
+            methodBuilder.addParameter(AttributeValue.class, "value");
+        }
         if (attributeName == null) {
             // A nonexistant sort key. Return a Void that is null.
             methodBuilder.returns(Void.class)
@@ -359,19 +365,28 @@ public class TableWriter {
         } else {
             var parameterMetadata = attributes.get(attributeName);
             methodBuilder.returns(TypeName.get(parameterMetadata.returnType));
-            if (parameterMetadata.returnType.getKind().isPrimitive()) {
-                // Cannot be null
-                methodBuilder.addStatement("return value." + parameterMetadata.getterName + "()");
+            if (fromItem) {
+                if (parameterMetadata.returnType.getKind().isPrimitive()) {
+                    // Cannot be null
+                    methodBuilder.addStatement("return value." + parameterMetadata.getterName + "()");
+                } else {
+                    // Check for null
+                    methodBuilder.addStatement("$T key = value." + parameterMetadata.getterName + "()", parameterMetadata.returnType)
+                        .beginControlFlow("if (key == null)")
+                        .addStatement("throw new $T($S)", NullPointerException.class,
+                            "Null "
+                                + (attributeName.equals(partitionKeyAttribute) ? "partition" : "sort")
+                                + " key attribute \"" + attributeName + "\"")
+                        .endControlFlow()
+                        .addStatement("return key");
+                }
             } else {
-                // Check for null
-                methodBuilder.addStatement("$T key = value." + parameterMetadata.getterName + "()", parameterMetadata.returnType)
-                    .beginControlFlow("if (key == null)")
-                    .addStatement("throw new $T($S)", NullPointerException.class,
-                        "Null "
-                            + (attributeName.equals(partitionKeyAttribute) ? "partition" : "sort")
-                            + " key attribute \"" + attributeName + "\"")
-                    .endControlFlow()
-                    .addStatement("return key");
+                methodBuilder.beginControlFlow("if ((value == null) || (value.nul() == $T.TRUE))", Boolean.class)
+                    .addStatement("return null")
+                    .nextControlFlow("else");
+                var formatParams = new HashMap<String, Object>();
+                methodBuilder.addCode("return " + buildAttributeDecodeExpression("value", parameterMetadata.codecClass, parameterMetadata.returnType, formatParams) + ";\n", formatParams);
+                methodBuilder.endControlFlow();
             }
         }
         return methodBuilder.build();

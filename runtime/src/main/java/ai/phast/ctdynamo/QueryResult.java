@@ -33,6 +33,8 @@ public class QueryResult<T> implements Iterable<T> {
 
     private Map<String, AttributeValue> exclusiveStart;
 
+    private CapacityUsed capacity = new CapacityUsed();
+
     QueryResult(DynamoIndex<T, ?, ?> index, QueryRequest.Builder queryBuilder, int limit) {
         this.queryBuilder = queryBuilder;
         this.index = index;
@@ -70,6 +72,7 @@ public class QueryResult<T> implements Iterable<T> {
             if (response.scannedCount() != null) {
                 itemsScanned += response.scannedCount();
             }
+            capacity.add(response.consumedCapacity());
 
             futureResponse = null;
             var nextQueryStart = response.lastEvaluatedKey();
@@ -134,6 +137,10 @@ public class QueryResult<T> implements Iterable<T> {
 
     public int getItemsScanned() {
         return itemsScanned;
+    }
+
+    public CapacityUsed getCapacity() {
+        return capacity;
     }
 
     public Stream<T> stream() {

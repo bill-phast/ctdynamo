@@ -11,18 +11,22 @@ public class ExtendedItemResult<T> {
 
     private final T item;
 
-    private final ConsumedCapacity consumedCapacity;
+    private final CapacityUsed capacity;
 
-    public ExtendedItemResult(T item, ConsumedCapacity consumedCapacity) {
+    ExtendedItemResult(T item, ConsumedCapacity rawCapacity) {
+        this(item, new CapacityUsed(rawCapacity));
+    }
+
+    public ExtendedItemResult(T item, CapacityUsed capacity) {
         this.item = item;
-        this.consumedCapacity = consumedCapacity;
+        this.capacity = capacity;
     }
 
     public T getItem() {
         return item;
     }
 
-    public ConsumedCapacity getConsumedCapacity() {
-        return consumedCapacity;
+    public CapacityUsed getCapacity() {
+        return capacity;
     }
 }
