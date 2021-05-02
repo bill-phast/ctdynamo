@@ -12,7 +12,6 @@ import software.amazon.awssdk.services.dynamodb.model.DeleteItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.DeleteRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
-import software.amazon.awssdk.services.dynamodb.model.ItemCollectionMetrics;
 import software.amazon.awssdk.services.dynamodb.model.KeysAndAttributes;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutItemResponse;
@@ -24,7 +23,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -38,28 +36,32 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         super(client, asyncClient, tableName, null, partitionKeyAttribute, sortKeyAttribute);
     }
 
-    public final T get(T value) {
-        return get(getPartitionKey(value), getSortKey(value));
+    public final T getItem(T value) {
+        return getItem(getPartitionKey(value), getSortKey(value));
     }
 
-    public final T get(Key<PartitionT, SortT> key) {
-        return get(key.getPartition(), key.getSort());
+    public final T getItem(Key<PartitionT, SortT> key) {
+        return getItem(key.getPartition(), key.getSort());
     }
 
-    public T get(PartitionT partitionValue, SortT sortValue) {
-        var response = get(GetItemRequest.builder()
+    public T getItem(PartitionT partitionValue, SortT sortValue) {
+        var response = getItem(GetItemRequest.builder()
                                .tableName(getTableName())
                                .key(keysToMap(partitionValue, sortValue))
                                .build());
         return response.hasItem() ? decode(response.item()) : null;
     }
 
-    public final ExtendedItemResult<T> getExtended(T value, boolean useConsistentRead) {
-        return getExtended(getPartitionKey(value), getSortKey(value), useConsistentRead);
+    public final ExtendedItemResult<T> getItemExtended(T value, boolean useConsistentRead) {
+        return getItemExtended(getPartitionKey(value), getSortKey(value), useConsistentRead);
     }
 
-    public ExtendedItemResult<T> getExtended(PartitionT partitionValue, SortT sortValue, boolean useConsistentRead) {
-        var response = get(GetItemRequest.builder()
+    public final ExtendedItemResult<T> getItemExtended(Key<PartitionT, SortT> key, boolean useConsistentRead) {
+        return getItemExtended(key.getPartition(), key.getSort(), useConsistentRead);
+    }
+
+    public ExtendedItemResult<T> getItemExtended(PartitionT partitionValue, SortT sortValue, boolean useConsistentRead) {
+        var response = getItem(GetItemRequest.builder()
                                .tableName(getTableName())
                                .key(keysToMap(partitionValue, sortValue))
                                .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
@@ -69,24 +71,36 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
             response.consumedCapacity());
     }
 
-    public final CompletableFuture<T> getAsync(T value) {
-        return getAsync(getPartitionKey(value), getSortKey(value));
+    private GetItemResponse getItem(GetItemRequest request) {
+        return getClient() == null ? getAsyncClient().getItem(request).join() : getClient().getItem(request);
     }
 
-    public CompletableFuture<T> getAsync(PartitionT partitionValue, SortT sortValue) {
-        return getAsync(GetItemRequest.builder()
+    public final CompletableFuture<T> getItemAsync(T value) {
+        return getItemAsync(getPartitionKey(value), getSortKey(value));
+    }
+
+    public final CompletableFuture<T> getItemAsync(Key<PartitionT, SortT> key) {
+        return getItemAsync(key.getPartition(), key.getSort());
+    }
+
+    public CompletableFuture<T> getItemAsync(PartitionT partitionValue, SortT sortValue) {
+        return getItemAsync(GetItemRequest.builder()
                             .tableName(getTableName())
                             .key(keysToMap(partitionValue, sortValue))
                             .build())
                    .thenApply(r -> r.hasItem() ? decode(r.item()) : null);
     }
 
-    public final CompletableFuture<ExtendedItemResult<T>> getExtendedAsync(T value, boolean useConsistentRead) {
-        return getExtendedAsync(getPartitionKey(value), getSortKey(value), useConsistentRead);
+    public final CompletableFuture<ExtendedItemResult<T>> getItemExtendedAsync(T value, boolean useConsistentRead) {
+        return getItemExtendedAsync(getPartitionKey(value), getSortKey(value), useConsistentRead);
     }
 
-    public CompletableFuture<ExtendedItemResult<T>> getExtendedAsync(PartitionT partitionValue, SortT sortValue, boolean useConsistentRead) {
-        return getAsync(GetItemRequest.builder()
+    public final CompletableFuture<ExtendedItemResult<T>> getItemExtendedAsync(Key<PartitionT, SortT> key, boolean useConsistentRead) {
+        return getItemExtendedAsync(key.getPartition(), key.getSort(), useConsistentRead);
+    }
+
+    public CompletableFuture<ExtendedItemResult<T>> getItemExtendedAsync(PartitionT partitionValue, SortT sortValue, boolean useConsistentRead) {
+        return getItemAsync(GetItemRequest.builder()
                             .tableName(getTableName())
                             .key(keysToMap(partitionValue, sortValue))
                             .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
@@ -95,11 +109,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                    .thenApply(r -> new ExtendedItemResult<>(r.hasItem() ? decode(r.item()) : null, r.consumedCapacity()));
     }
 
-    private GetItemResponse get(GetItemRequest request) {
-        return getClient() == null ? getAsyncClient().getItem(request).join() : getClient().getItem(request);
-    }
-
-    private CompletableFuture<GetItemResponse> getAsync(GetItemRequest request) {
+    private CompletableFuture<GetItemResponse> getItemAsync(GetItemRequest request) {
         return getAsyncClient() == null
                ? CompletableFuture.supplyAsync(() -> getClient().getItem(request))
                : getAsyncClient().getItem(request);
@@ -140,7 +150,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return getBatchExtended(buildGetBatchesFromItems(items));
     }
 
-    public ExtendedBatchResult<T, PartitionT, SortT> getBatchesByKeyExtended(List<Key<PartitionT, SortT>> keys) {
+    public ExtendedBatchResult<T, PartitionT, SortT> getBatchByKeyExtended(List<Key<PartitionT, SortT>> keys) {
         return getBatchExtended(buildGetBatchesFromKeys(keys));
     }
 
@@ -187,7 +197,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return getBatchExtendedAsync(buildGetBatchesFromItems(items));
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchesByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
+    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
         return getBatchExtendedAsync(buildGetBatchesFromKeys(keys));
     }
 
@@ -264,8 +274,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    public ExtendedItemResult<T> putExtended(T value) {
-        var putResponse = put(PutItemRequest.builder()
+    public T putItem(T value) {
+        var putResponse = putItem(PutItemRequest.builder()
+                                      .tableName(getTableName())
+                                      .item(encode(value))
+                                      .build());
+        return putResponse.hasAttributes() ? decode(putResponse.attributes()) : null;
+    }
+
+    public ExtendedItemResult<T> putItemExtended(T value) {
+        var putResponse = putItem(PutItemRequest.builder()
                           .tableName(getTableName())
                           .item(encode(value))
                           .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
@@ -273,16 +291,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return new ExtendedItemResult<>(putResponse.hasAttributes() ? decode(putResponse.attributes()) : null, putResponse.consumedCapacity());
     }
 
-    public CompletableFuture<T> putAsync(T value) {
-        return putAsync(PutItemRequest.builder()
+    public CompletableFuture<T> putItemAsync(T value) {
+        return putItemAsync(PutItemRequest.builder()
                             .tableName(getTableName())
                             .item(encode(value))
                             .build())
                    .thenApply(resp -> resp.hasAttributes() ? decode(resp.attributes()) : null);
     }
 
-    public CompletableFuture<ExtendedItemResult<T>> putExtendedAsync(T value) {
-        return putAsync(PutItemRequest.builder()
+    public CompletableFuture<ExtendedItemResult<T>> putItemExtendedAsync(T value) {
+        return putItemAsync(PutItemRequest.builder()
                             .tableName(getTableName())
                             .item(encode(value))
                             .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
@@ -291,24 +309,24 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                        resp.hasAttributes() ? decode(resp.attributes()) : null, resp.consumedCapacity()));
     }
 
-    private PutItemResponse put(PutItemRequest request) {
+    private PutItemResponse putItem(PutItemRequest request) {
         return getClient() == null ? getAsyncClient().putItem(request).join() : getClient().putItem(request);
     }
 
-    private CompletableFuture<PutItemResponse> putAsync(PutItemRequest request) {
+    private CompletableFuture<PutItemResponse> putItemAsync(PutItemRequest request) {
         return getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().putItem(request)) : getAsyncClient().putItem(request);
     }
 
-    public final T delete(T value) {
-        return delete(getPartitionKey(value), getSortKey(value));
+    public final T deleteItem(T value) {
+        return deleteItem(getPartitionKey(value), getSortKey(value));
     }
 
-    public final T delete(Key<PartitionT, SortT> key) {
-        return delete(key.getPartition(), key.getSort());
+    public final T deleteItem(Key<PartitionT, SortT> key) {
+        return deleteItem(key.getPartition(), key.getSort());
     }
 
-    public T delete(PartitionT partitionKey, SortT sortKey) {
-        var deleteResponse = delete(DeleteItemRequest.builder()
+    public T deleteItem(PartitionT partitionKey, SortT sortKey) {
+        var deleteResponse = deleteItem(DeleteItemRequest.builder()
                    .tableName(getTableName())
                    .key(keysToMap(partitionKey, sortKey))
                    .build());
@@ -342,16 +360,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         }
     }
 
-    public final ExtendedItemResult<T> deleteExtended(T value) {
-        return deleteExtended(getPartitionKey(value), getSortKey(value));
+    public final ExtendedItemResult<T> deleteItemExtended(T value) {
+        return deleteItemExtended(getPartitionKey(value), getSortKey(value));
     }
 
-    public final ExtendedItemResult<T> deleteExtended(Key<PartitionT, SortT> value) {
-        return deleteExtended(value.getPartition(), value.getSort());
+    public final ExtendedItemResult<T> deleteItemExtended(Key<PartitionT, SortT> value) {
+        return deleteItemExtended(value.getPartition(), value.getSort());
     }
 
-    public ExtendedItemResult<T> deleteExtended(PartitionT partitionKey, SortT sortKey) {
-        var deleteResponse = delete(DeleteItemRequest.builder()
+    public ExtendedItemResult<T> deleteItemExtended(PartitionT partitionKey, SortT sortKey) {
+        var deleteResponse = deleteItem(DeleteItemRequest.builder()
                                         .tableName(getTableName())
                                         .key(keysToMap(partitionKey, sortKey))
                                         .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
@@ -384,16 +402,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    public final CompletableFuture<T> deleteAsync(T value) {
-        return deleteAsync(getPartitionKey(value), getSortKey(value));
+    public final CompletableFuture<T> deleteItemAsync(T value) {
+        return deleteItemAsync(getPartitionKey(value), getSortKey(value));
     }
 
-    public final CompletableFuture<T> deleteAsync(Key<PartitionT, SortT> key) {
-        return deleteAsync(key.getPartition(), key.getSort());
+    public final CompletableFuture<T> deleteItemAsync(Key<PartitionT, SortT> key) {
+        return deleteItemAsync(key.getPartition(), key.getSort());
     }
 
-    public CompletableFuture<T> deleteAsync(PartitionT partitionKey, SortT sortKey) {
-        return deleteAsync(DeleteItemRequest.builder()
+    public CompletableFuture<T> deleteItemAsync(PartitionT partitionKey, SortT sortKey) {
+        return deleteItemAsync(DeleteItemRequest.builder()
                                .tableName(getTableName())
                                .key(keysToMap(partitionKey, sortKey))
                                .build())
@@ -425,16 +443,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return CompletableFuture.allOf(futures);
     }
 
-    public final CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(T value) {
-        return deleteExtendedAsync(getPartitionKey(value), getSortKey(value));
+    public final CompletableFuture<ExtendedItemResult<T>> deleteItemExtendedAsync(T value) {
+        return deleteItemExtendedAsync(getPartitionKey(value), getSortKey(value));
     }
 
-    public final CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(Key<PartitionT, SortT> key) {
-        return deleteExtendedAsync(key.getPartition(), key.getSort());
+    public final CompletableFuture<ExtendedItemResult<T>> deleteItemExtendedAsync(Key<PartitionT, SortT> key) {
+        return deleteItemExtendedAsync(key.getPartition(), key.getSort());
     }
 
-    public CompletableFuture<ExtendedItemResult<T>> deleteExtendedAsync(PartitionT partitionKey, SortT sortKey) {
-        return deleteAsync(DeleteItemRequest.builder()
+    public CompletableFuture<ExtendedItemResult<T>> deleteItemExtendedAsync(PartitionT partitionKey, SortT sortKey) {
+        return deleteItemAsync(DeleteItemRequest.builder()
                                .tableName(getTableName())
                                .key(keysToMap(partitionKey, sortKey))
                                .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
@@ -484,11 +502,11 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    private DeleteItemResponse delete(DeleteItemRequest request) {
+    private DeleteItemResponse deleteItem(DeleteItemRequest request) {
         return getClient() == null ? getAsyncClient().deleteItem(request).join() : getClient().deleteItem(request);
     }
 
-    private CompletableFuture<DeleteItemResponse> deleteAsync(DeleteItemRequest request) {
+    private CompletableFuture<DeleteItemResponse> deleteItemAsync(DeleteItemRequest request) {
         return getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().deleteItem(request)) : getAsyncClient().deleteItem(request);
     }
 
