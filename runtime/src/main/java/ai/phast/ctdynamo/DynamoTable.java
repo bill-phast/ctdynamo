@@ -15,6 +15,7 @@ import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.KeysAndAttributes;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.PutRequest;
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity;
 import software.amazon.awssdk.services.dynamodb.model.WriteRequest;
 
@@ -146,16 +147,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                    .collect(Collectors.toList());
     }
 
-    public ExtendedBatchResult<T, PartitionT, SortT> getBatchByItemExtended(List<T> items) {
+    public ExtendedBatchResult<T, Key<PartitionT, SortT>> getBatchByItemExtended(List<T> items) {
         return getBatchExtended(buildGetBatchesFromItems(items));
     }
 
-    public ExtendedBatchResult<T, PartitionT, SortT> getBatchByKeyExtended(List<Key<PartitionT, SortT>> keys) {
+    public ExtendedBatchResult<T, Key<PartitionT, SortT>> getBatchByKeyExtended(List<Key<PartitionT, SortT>> keys) {
         return getBatchExtended(buildGetBatchesFromKeys(keys));
     }
 
-    private ExtendedBatchResult<T, PartitionT, SortT> getBatchExtended(List<Map<String, KeysAndAttributes>> batches) {
-        var result = new ExtendedBatchResult<T, PartitionT, SortT>();
+    private ExtendedBatchResult<T, Key<PartitionT, SortT>> getBatchExtended(List<Map<String, KeysAndAttributes>> batches) {
+        var result = new ExtendedBatchResult<T, Key<PartitionT, SortT>>();
         for (var batch : batches) {
             var request = BatchGetItemRequest.builder()
                               .requestItems(batch)
@@ -193,16 +194,16 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchByItemExtendedAsync(List<T> items) {
+    public CompletableFuture<ExtendedBatchResult<T, Key<PartitionT, SortT>>> getBatchByItemExtendedAsync(List<T> items) {
         return getBatchExtendedAsync(buildGetBatchesFromItems(items));
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
+    public CompletableFuture<ExtendedBatchResult<T, Key<PartitionT, SortT>>> getBatchByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
         return getBatchExtendedAsync(buildGetBatchesFromKeys(keys));
     }
 
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> getBatchExtendedAsync(List<Map<String, KeysAndAttributes>> batches) {
-        var result = CompletableFuture.completedFuture(new ExtendedBatchResult<T, PartitionT, SortT>());
+    public CompletableFuture<ExtendedBatchResult<T, Key<PartitionT, SortT>>> getBatchExtendedAsync(List<Map<String, KeysAndAttributes>> batches) {
+        var result = CompletableFuture.completedFuture(new ExtendedBatchResult<T, Key<PartitionT, SortT>>());
         for (var batch : batches) {
             var request = BatchGetItemRequest.builder()
                               .requestItems(batch)
@@ -216,7 +217,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return result;
     }
 
-    private ExtendedBatchResult<T, PartitionT, SortT> updateExtendedGetBatchResult(ExtendedBatchResult<T, PartitionT, SortT> result, BatchGetItemResponse response) {
+    private ExtendedBatchResult<T, Key<PartitionT, SortT>> updateExtendedGetBatchResult(ExtendedBatchResult<T, Key<PartitionT, SortT>> result, BatchGetItemResponse response) {
         if (response.hasResponses()) {
             response.responses().get(getTableName()).stream()
                 .map(this::decode)
@@ -229,7 +230,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         }
         if (response.hasUnprocessedKeys()) {
             for (var keyMap : response.unprocessedKeys().get(getTableName()).keys()) {
-                result.getUnprocessedKeys().add(new Key<>(getPartitionKey(keyMap.get(getPartitionKeyAttribute())),
+                result.getUnprocessedValues().add(new Key<>(getPartitionKey(keyMap.get(getPartitionKeyAttribute())),
                     getSortKey(keyMap.get(getSortKeyAttribute()))));
             }
         }
@@ -282,6 +283,24 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return putResponse.hasAttributes() ? decode(putResponse.attributes()) : null;
     }
 
+    public void putBatch(List<T> values) {
+        int numValues = values.size();
+        for (int i = 0; i < numValues; i += MAX_ITEMS_PER_BATCH) {
+            var request = BatchWriteItemRequest.builder()
+                              .requestItems(Collections.singletonMap(getTableName(),
+                                  values.subList(i, Math.min(numValues, i + MAX_ITEMS_PER_BATCH)).stream()
+                                      .map(value -> WriteRequest.builder().putRequest(PutRequest.builder()
+                                                                                          .item(encode(value)).build()).build())
+                                      .collect(Collectors.toList())))
+                              .build();
+            if (getClient() == null) {
+                getAsyncClient().batchWriteItem(request).join();
+            } else {
+                getClient().batchWriteItem(request);
+            }
+        }
+    }
+
     public ExtendedItemResult<T> putItemExtended(T value) {
         var putResponse = putItem(PutItemRequest.builder()
                           .tableName(getTableName())
@@ -291,12 +310,47 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return new ExtendedItemResult<>(putResponse.hasAttributes() ? decode(putResponse.attributes()) : null, putResponse.consumedCapacity());
     }
 
+    public ExtendedBatchResult<T, T> putBatchExtended(List<T> values) {
+        int numValues = values.size();
+        var result = new ExtendedBatchResult<T, T>();
+        for (int i = 0; i < numValues; i += MAX_ITEMS_PER_BATCH) {
+            var request = BatchWriteItemRequest.builder()
+                              .requestItems(Collections.singletonMap(getTableName(),
+                                  values.subList(i, Math.min(numValues, i + MAX_ITEMS_PER_BATCH)).stream()
+                                      .map(value -> WriteRequest.builder().putRequest(PutRequest.builder()
+                                                                                          .item(encode(value)).build()).build())
+                                      .collect(Collectors.toList())))
+                              .build();
+            var response = getClient() == null ? getAsyncClient().batchWriteItem(request).join() : getClient().batchWriteItem(request);
+            updateBatchResultForPut(result, response);
+        }
+        return result;
+    }
+
     public CompletableFuture<T> putItemAsync(T value) {
         return putItemAsync(PutItemRequest.builder()
                             .tableName(getTableName())
                             .item(encode(value))
                             .build())
                    .thenApply(resp -> resp.hasAttributes() ? decode(resp.attributes()) : null);
+    }
+
+    public CompletableFuture<Void> putBatchAsync(List<T> values) {
+        int numValues = values.size();
+        var futures = new CompletableFuture<?>[(numValues + MAX_ITEMS_PER_BATCH) / MAX_ITEMS_PER_BATCH];
+        for (int i = 0; i < numValues; i += MAX_ITEMS_PER_BATCH) {
+            var request = BatchWriteItemRequest.builder()
+                              .requestItems(Collections.singletonMap(getTableName(),
+                                  values.subList(i, Math.min(numValues, i + MAX_ITEMS_PER_BATCH)).stream()
+                                      .map(value -> WriteRequest.builder().putRequest(PutRequest.builder()
+                                                                                          .item(encode(value)).build()).build())
+                                      .collect(Collectors.toList())))
+                              .build();
+            futures[i / MAX_ITEMS_PER_BATCH] =
+                getAsyncClient() == null ? CompletableFuture.runAsync(() -> getClient().batchWriteItem(request))
+                                         : getAsyncClient().batchWriteItem(request);
+        }
+        return CompletableFuture.allOf(futures);
     }
 
     public CompletableFuture<ExtendedItemResult<T>> putItemExtendedAsync(T value) {
@@ -309,12 +363,44 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
                        resp.hasAttributes() ? decode(resp.attributes()) : null, resp.consumedCapacity()));
     }
 
+    public CompletableFuture<ExtendedBatchResult<T, T>> putBatchExtendedAsync(List<T> values) {
+        int numValues = values.size();
+        var result = CompletableFuture.completedFuture(new ExtendedBatchResult<T, T>());
+        for (int i = 0; i < numValues; i += MAX_ITEMS_PER_BATCH) {
+            var request = BatchWriteItemRequest.builder()
+                              .returnConsumedCapacity(ReturnConsumedCapacity.INDEXES)
+                              .requestItems(Collections.singletonMap(getTableName(),
+                                  values.subList(i, Math.min(numValues, i + MAX_ITEMS_PER_BATCH)).stream()
+                                      .map(value -> WriteRequest.builder().putRequest(PutRequest.builder()
+                                                                                          .item(encode(value)).build()).build())
+                                      .collect(Collectors.toList())))
+                              .build();
+            result = result.thenCombine(
+                getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().batchWriteItem(request))
+                                         : getAsyncClient().batchWriteItem(request),
+                this::updateBatchResultForPut);
+        }
+        return result;
+    }
+
     private PutItemResponse putItem(PutItemRequest request) {
         return getClient() == null ? getAsyncClient().putItem(request).join() : getClient().putItem(request);
     }
 
     private CompletableFuture<PutItemResponse> putItemAsync(PutItemRequest request) {
         return getAsyncClient() == null ? CompletableFuture.supplyAsync(() -> getClient().putItem(request)) : getAsyncClient().putItem(request);
+    }
+
+    private ExtendedBatchResult<T, T> updateBatchResultForPut(ExtendedBatchResult<T, T> result, BatchWriteItemResponse response) {
+        if (response.hasUnprocessedItems()) {
+            response.unprocessedItems().get(getTableName()).stream()
+                .map(writeRequest -> decode(writeRequest.putRequest().item()))
+                .forEach(item -> result.getUnprocessedValues().add(item));
+        }
+        if (response.hasConsumedCapacity()) {
+            response.consumedCapacity().forEach(cap -> result.getCapacity().add(cap));
+        }
+        return result;
     }
 
     public final T deleteItem(T value) {
@@ -381,7 +467,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
      * Get a batch of items. This can't be named "getBatch" because erasure makes it the same as the by-key version.
      * @param items The items whose keys will be used to get the batch
      */
-    public ExtendedBatchResult<T, PartitionT, SortT> deleteBatchByItemExtended(List<T> items) {
+    public ExtendedBatchResult<T, Key<PartitionT, SortT>> deleteBatchByItemExtended(List<T> items) {
         return deleteBatchExtended(buildDeleteBatchesFromItems(items));
     }
 
@@ -389,12 +475,12 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
      * Get a batch of items. This can't be named "getBatch" because erasure makes it the same as the by-item version.
      * @param keys The keys used to get the batch
      */
-    public ExtendedBatchResult<T, PartitionT, SortT> deleteBatchByKeyExtended(List<Key<PartitionT, SortT>> keys) {
+    public ExtendedBatchResult<T, Key<PartitionT, SortT>> deleteBatchByKeyExtended(List<Key<PartitionT, SortT>> keys) {
         return deleteBatchExtended(buildDeleteBatchesFromKeys(keys));
     }
 
-    private ExtendedBatchResult<T, PartitionT, SortT> deleteBatchExtended(List<Map<String, List<WriteRequest>>> batches) {
-        var result = new ExtendedBatchResult<T, PartitionT, SortT>();
+    private ExtendedBatchResult<T, Key<PartitionT, SortT>> deleteBatchExtended(List<Map<String, List<WriteRequest>>> batches) {
+        var result = new ExtendedBatchResult<T, Key<PartitionT, SortT>>();
         for (var batch: batches) {
             var req = BatchWriteItemRequest.builder().requestItems(batch).build();
             updateBatchResultForDelete(result, getClient() == null ? getAsyncClient().batchWriteItem(req).join() : getClient().batchWriteItem(req));
@@ -465,7 +551,7 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
      * Get a batch of items. This can't be named "getBatch" because erasure makes it the same as the by-key version.
      * @param items The items whose keys will be used to get the batch
      */
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> deleteBatchByItemExtendedAsync(List<T> items) {
+    public CompletableFuture<ExtendedBatchResult<T, Key<PartitionT, SortT>>> deleteBatchByItemExtendedAsync(List<T> items) {
         return deleteBatchExtendedAsync(buildDeleteBatchesFromItems(items));
     }
 
@@ -473,12 +559,12 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
      * Get a batch of items. This can't be named "getBatch" because erasure makes it the same as the by-item version.
      * @param keys The keys used to get the batch
      */
-    public CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> deleteBatchByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
+    public CompletableFuture<ExtendedBatchResult<T, Key<PartitionT, SortT>>> deleteBatchByKeyExtendedAsync(List<Key<PartitionT, SortT>> keys) {
         return deleteBatchExtendedAsync(buildDeleteBatchesFromKeys(keys));
     }
 
-    private CompletableFuture<ExtendedBatchResult<T, PartitionT, SortT>> deleteBatchExtendedAsync(List<Map<String, List<WriteRequest>>> batches) {
-        var futureResult = CompletableFuture.completedFuture(new ExtendedBatchResult<T, PartitionT, SortT>());
+    private CompletableFuture<ExtendedBatchResult<T, Key<PartitionT, SortT>>> deleteBatchExtendedAsync(List<Map<String, List<WriteRequest>>> batches) {
+        var futureResult = CompletableFuture.completedFuture(new ExtendedBatchResult<T, Key<PartitionT, SortT>>());
         for (var batch : batches) {
             var req = BatchWriteItemRequest.builder().requestItems(batch).build();
             futureResult = futureResult.thenCombine(
@@ -489,12 +575,12 @@ public abstract class DynamoTable<T, PartitionT, SortT> extends DynamoIndex<T, P
         return futureResult;
     }
 
-    private ExtendedBatchResult<T, PartitionT, SortT> updateBatchResultForDelete(ExtendedBatchResult<T, PartitionT, SortT> result, BatchWriteItemResponse response) {
+    private ExtendedBatchResult<T, Key<PartitionT, SortT>> updateBatchResultForDelete(ExtendedBatchResult<T, Key<PartitionT, SortT>> result, BatchWriteItemResponse response) {
         if (response.hasUnprocessedItems()) {
             response.unprocessedItems().get(getTableName()).stream()
                 .map(writeRequest -> writeRequest.deleteRequest().key())
                 .map(m -> new Key<>(getPartitionKey(m.get(getPartitionKeyAttribute())), getSortKey(m.get(getSortKeyAttribute()))))
-                .forEach(k -> result.getUnprocessedKeys().add(k));
+                .forEach(k -> result.getUnprocessedValues().add(k));
         }
         if (response.hasConsumedCapacity()) {
             response.consumedCapacity().forEach(cap -> result.getCapacity().add(cap));

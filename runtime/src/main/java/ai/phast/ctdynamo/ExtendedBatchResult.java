@@ -8,11 +8,11 @@ import java.util.List;
  * and the consumed capacity of the operation.
  * @param <T> The item returned
  */
-public class ExtendedBatchResult<T, PartitionT, SortT> {
+public class ExtendedBatchResult<T, UnprocessedT> {
 
     private final List<T> items = new ArrayList<>();
 
-    private final List<Key<PartitionT, SortT>> unprocessedKeys = new ArrayList<>();
+    private final List<UnprocessedT> unprocessedValues = new ArrayList<>();
 
     private final CapacityUsed capacity = new CapacityUsed();
 
@@ -23,8 +23,8 @@ public class ExtendedBatchResult<T, PartitionT, SortT> {
         return items;
     }
 
-    public List<Key<PartitionT, SortT>> getUnprocessedKeys() {
-        return unprocessedKeys;
+    public List<UnprocessedT> getUnprocessedValues() {
+        return unprocessedValues;
     }
 
     public CapacityUsed getCapacity() {
