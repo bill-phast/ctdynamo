@@ -70,6 +70,14 @@ public abstract class DynamoIndex<T, PartitionT, SortT> {
         return new Query<>(this, partitionValue);
     }
 
+    public final Scan<T> scan() {
+        return scan(0, 1);
+    }
+
+    public Scan<T> scan(int segment, int numSegments) {
+        return new Scan<>(this, segment, numSegments);
+    }
+
     protected abstract AttributeValue partitionValueToAttributeValue(PartitionT partitionValue);
 
     protected abstract AttributeValue sortValueToAttributeValue(SortT sortValue);
