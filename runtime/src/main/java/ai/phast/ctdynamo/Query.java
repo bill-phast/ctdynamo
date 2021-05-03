@@ -119,7 +119,7 @@ public final class Query<T, PartitionT, SortT> {
         return this;
     }
 
-    public QueryResult<T> invoke() {
+    public IterableResult<T, ?> invoke() {
         if (pageSize <= 0) {
             if (limit >= 0) {
                 builder.limit(limit);
