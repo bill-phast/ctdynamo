@@ -23,6 +23,11 @@ public final class Query<T, PartitionT, SortT> {
 
     Query(DynamoIndex<T, PartitionT, SortT> index, PartitionT partitionValue) {
         this.index = index;
+        builder.tableName(index.getTableName());
+        var indexName = index.getIndexName();
+        if (indexName != null) {
+            builder.indexName(indexName);
+        }
         if (partitionValue != null) {
             values.put(":p", index.partitionValueToAttributeValue(partitionValue));
         }

@@ -17,6 +17,11 @@ public final class Scan<T> {
 
     Scan(DynamoIndex<T, ?, ?> index, int segment, int numSegments) {
         this.index = index;
+        builder.tableName(index.getTableName()).indexName(index.getIndexName());
+        var indexName = index.getIndexName();
+        if (indexName != null) {
+            builder.indexName(indexName);
+        }
         if (numSegments > 1) {
             builder.segment(segment).totalSegments(numSegments);
         }
