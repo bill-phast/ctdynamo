@@ -474,13 +474,34 @@ public class TableWriter {
         builder.addStatement("$T attribute", AttributeValue.class);
         var formatParams = new HashMap<String, Object>();
         for (var entry: attributes.entrySet()) {
-            builder.addStatement("attribute = map.get($S)", entry.getKey());
-            builder.beginControlFlow("if (attribute != null && attribute.nul() != $T.TRUE)", Boolean.class);
             formatParams.clear();
-            builder.addNamedCode("result." + entry.getValue().setterName + "("
-                + buildAttributeDecodeExpression("attribute", entry.getValue().codecClass, entry.getValue().returnType, formatParams)
-                + ");\n", formatParams);
-            builder.endControlFlow();
+            if (entry.getKey().equals(partitionKeyAttribute) || entry.getKey().equals(sortKeyAttribute)) {
+                // Cannot be null. Just call the setter.
+                formatParams.put("a", entry.getKey());
+                builder.addNamedCode("result." + entry.getValue().setterName + "("
+                                         + buildAttributeDecodeExpression("map.get($a:S)", entry.getValue().codecClass, entry.getValue().returnType, formatParams)
+                                         + ");\n", formatParams);
+            } else {
+                builder.addStatement("attribute = map.get($S)", entry.getKey());
+                var expression = buildAttributeDecodeExpression("attribute", entry.getValue().codecClass, entry.getValue().returnType, formatParams);
+                if (ignoreNulls || entry.getValue().returnType.getKind().isPrimitive()) {
+                    // With ignore nulls or a primitive type, we ignore null attributes.
+                    // Primitive types perhaps should throw exceptions when they see an explicit null value, but that is
+                    // a dangerous game to play.
+                    builder.beginControlFlow("if (attribute != null && attribute.nul() != $T.TRUE)", Boolean.class)
+                        .addNamedCode("result." + entry.getValue().setterName + "("
+                                          + expression
+                                          + ");\n", formatParams)
+                        .endControlFlow();
+                } else {
+                    // If we have a nullable field and we don't ignore nulls, then we explicitly set the value to null.
+                    // This will be unnecessary in most cases, but if the class has a nullable field with a non-null value
+                    // then it will be needed.
+                    formatParams.put("b", Boolean.class);
+                    builder.addNamedCode("result." + entry.getValue().setterName + "(attribute == null || attribute.nul() == $b:T.TRUE ? null : "
+                                             + expression + ");\n", formatParams);
+                }
+            }
         }
         return builder.addStatement("return result").build();
     }
@@ -545,11 +566,23 @@ public class TableWriter {
                         + DynamoSecondaryPartitionKey.class.getSimpleName() + " annotations").build();
             case 1:
                 var entry = indexes.entrySet().iterator().next();
+                var partitionType = attributes.get(entry.getValue().getPartitonAttribute()).returnType;
+                var sortType = attributes.get(entry.getValue().getSortAttribute()).returnType;
                 return builder.beginControlFlow("if (name.equals($S))", entry.getKey())
-                           .addStatement("if ((partitionClass == $T.class) && (sortClass == $T.class))",
-                               attributes.get(entry.getValue().getPartitonAttribute()).returnType,
-                               attributes.get(entry.getValue().getSortAttribute()).returnType)
+                           .beginControlFlow("if ((partitionClass == $T.class) && (sortClass == $T.class))", partitionType, sortType)
                            .addStatement("return (DynamoIndex<$T, IndexPartitionT, IndexSortT>)" + "get" + upcaseFirst(entry.getKey()) + "Index()", entryType)
+                           .nextControlFlow("else")
+                           .addStatement("throw new $T($S + partitionClass.getSimpleName() + $S + sortClass.getSimpleName())",
+                               IllegalArgumentException.class, "Incorrect key types for index " + entry.getKey() + ", expected: "
+                                                                   + (partitionType.getKind().isPrimitive()
+                                                                      ? partitionType.toString()
+                                                                      : ((DeclaredType)partitionType).asElement().getSimpleName())
+                                                                   + " and "
+                                                                   + (sortType.getKind().isPrimitive()
+                                                                      ? sortType.toString()
+                                                                      : ((DeclaredType)sortType).asElement().getSimpleName()) + ", got: ",
+                               " and ")
+                           .endControlFlow()
                            .nextControlFlow("else")
                            .addStatement("throw new $T($S + name)", IllegalArgumentException.class, "Unknown index: ")
                            .endControlFlow()

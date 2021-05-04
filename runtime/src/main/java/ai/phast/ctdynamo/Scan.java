@@ -42,7 +42,7 @@ public final class Scan<T> {
         return this;
     }
 
-    public IterableResult<T, ?> invoke() {
+    public IterableResult<T> invoke() {
         if (pageSize <= 0) {
             if (limit >= 0) {
                 builder.limit(limit);

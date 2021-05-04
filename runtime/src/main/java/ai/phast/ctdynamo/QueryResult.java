@@ -15,7 +15,7 @@ import java.util.concurrent.CompletableFuture;
  * presented to applications using this library.
  * @param <T> The type of item in the index
  */
-class QueryResult<T> extends IterableResult<T, QueryResponse> {
+class QueryResult<T> extends PagedResult<T, QueryResponse> {
 
     private final QueryRequest.Builder queryBuilder;
 
@@ -26,7 +26,7 @@ class QueryResult<T> extends IterableResult<T, QueryResponse> {
     }
 
     @Override
-    protected CompletableFuture<QueryResponse> fetchNextPage(Map<String, AttributeValue> exclusiveStart) {
+    CompletableFuture<QueryResponse> fetchNextPage(Map<String, AttributeValue> exclusiveStart) {
         if (exclusiveStart != null) {
             queryBuilder.exclusiveStartKey(exclusiveStart);
         }
@@ -35,27 +35,27 @@ class QueryResult<T> extends IterableResult<T, QueryResponse> {
     }
 
     @Override
-    protected int getScannedCount(QueryResponse response) {
+    int getScannedCount(QueryResponse response) {
         return response.scannedCount() == null ? 0 : response.scannedCount();
     }
 
     @Override
-    protected int getCount(QueryResponse response) {
+    int getCount(QueryResponse response) {
         return response.count() == null ? 0 : response.count();
     }
 
     @Override
-    protected ConsumedCapacity getRawCapacity(QueryResponse response) {
+    ConsumedCapacity getRawCapacity(QueryResponse response) {
         return response.consumedCapacity();
     }
 
     @Override
-    protected Map<String, AttributeValue> getLastEvaluatedKey(QueryResponse response) {
+    Map<String, AttributeValue> getLastEvaluatedKey(QueryResponse response) {
         return response.hasLastEvaluatedKey() ? response.lastEvaluatedKey() : null;
     }
 
     @Override
-    protected List<Map<String, AttributeValue>> getItems(QueryResponse response) {
+    List<Map<String, AttributeValue>> getItems(QueryResponse response) {
         return response.hasItems() ? response.items() : Collections.emptyList();
     }
 }

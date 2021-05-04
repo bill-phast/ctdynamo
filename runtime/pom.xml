@@ -10,6 +10,22 @@
         <version>1.0</version>
     </parent>
     <artifactId>ctdynamo-runtime</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Runtime library for ctdynamo</name>
+    <description>
+        This is the runtime portion of ctdynamo, the compile time dynamo layer. It replaces the AWS SDK v2 enhanced
+        dynamo package with something that is easier to use and higher performance. See ctdynamo-processor for the
+        matching compile time dependency
+    </description>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
