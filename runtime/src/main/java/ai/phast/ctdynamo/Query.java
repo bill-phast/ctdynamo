@@ -6,12 +6,19 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Build an execute a query
+ * @param <T> The type of item to return
+ * @param <PartitionT> The type of the partition key
+ * @param <SortT> The type of the sort key
+ */
 public final class Query<T, PartitionT, SortT> {
 
+    /** All expression attribute values */
     private final Map<String, AttributeValue> values = new HashMap<>();
 
-    private final QueryRequest.Builder builder = QueryRequest.builder()
-        .expressionAttributeValues(values);
+    /** The builder for our query request */
+    private final QueryRequest.Builder builder = QueryRequest.builder();
 
     private final DynamoIndex<T, PartitionT, SortT> index;
 
@@ -125,6 +132,7 @@ public final class Query<T, PartitionT, SortT> {
     }
 
     public IterableResult<T> invoke() {
+        builder.expressionAttributeValues(values);
         if (pageSize <= 0) {
             if (limit >= 0) {
                 builder.limit(limit);

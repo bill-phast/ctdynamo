@@ -6,7 +6,7 @@ public abstract class DynamoCodec<T> {
 
     /**
      * If we don't suppress nulls, then we'll need a lot null attribute values. Since they are all identical and
-     * immutable we may as well build one at initialiation time and be done.
+     * immutable we may as well build one at initialization time and be done.
      */
     public static final AttributeValue NULL_ATTRIBUTE_VALUE = AttributeValue.builder().nul(true).build();
 
