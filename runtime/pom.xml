@@ -10,6 +10,7 @@
         <version>1.0</version>
     </parent>
     <artifactId>ctdynamo-runtime</artifactId>
+    <version>0.0.1-beta</version>
     <packaging>jar</packaging>
 
     <name>Runtime library for ctdynamo</name>

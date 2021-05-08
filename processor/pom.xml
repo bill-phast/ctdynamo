@@ -10,6 +10,22 @@
         <version>1.0</version>
     </parent>
     <artifactId>ctdynamo-processor</artifactId>
+    <version>0.0.1-beta</version>
+    <packaging>jar</packaging>
+
+    <name>Processor for ctdynamo</name>
+    <description>
+        This is the annotation processor for ctdynamo. It examines beans and builds java files managing
+        tables, indexes, and/or codecs for annotated classes.
+    </description>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
